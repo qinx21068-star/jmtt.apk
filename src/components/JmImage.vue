@@ -40,7 +40,7 @@ async function tryLoad() {
   // 检查是否需要 scramble 解码
   const parsed = parseImageProxyUrl(props.src)
   if (parsed && parsed.aid && parsed.scrambleId && parsed.filename) {
-    const num = await getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
+    const num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
     displaySrc.value = await decodeImageCached(props.src, num)
   } else {
     displaySrc.value = props.src

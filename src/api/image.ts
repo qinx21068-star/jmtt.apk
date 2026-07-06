@@ -18,217 +18,204 @@ const SCRAMBLE_220980 = 220980
 const SCRAMBLE_268850 = 268850
 const SCRAMBLE_421926 = 421926
 
-/** 简单 MD5 实现（用 Web Crypto 不支持 MD5，用 SubtleCrypto 也不行，这里用纯 JS）。
- *  仅用于 scramble 分割数计算，性能要求不高。 */
-async function md5hex(input: string): Promise<string> {
-  // 用浏览器内置的 crypto.subtle 不支持 MD5。
-  // 这里用纯 JS 实现（来自 blueimp/md5 简化版）。
-  // 为避免引入大依赖，使用以下轻量实现。
-  return md5(input)
+// ============================================================================
+// 纯 JS MD5 实现（移植自 blueimp/md5，Web Crypto 不支持 MD5）
+// 与 worker/src/crypto.ts 的实现保持一致，已通过 Node crypto 对照测试
+// ============================================================================
+const MD5_S = [
+  7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+  5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+  4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+  6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+]
+const MD5_K = [
+  0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
+  0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+  0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
+  0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+  0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
+  0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+  0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+  0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+  0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
+  0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+  0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+]
+
+function safeAdd(x: number, y: number): number {
+  const lsw = (x & 0xffff) + (y & 0xffff)
+  const msw = (x >> 16) + (y >> 16) + (lsw >> 16)
+  return (msw << 16) | (lsw & 0xffff)
 }
 
-// ---- blueimp/md5 简化实现（仅 ASCII 输入够用，禁漫 aid+filename 都是 ASCII）----
-function md5(str: string): string {
-  function rotateLeft(x: number, c: number): number {
-    return (x << c) | (x >>> (32 - c))
+function bitRol(num: number, cnt: number): number {
+  return (num << cnt) | (num >>> (32 - cnt))
+}
+
+function md5cmn(q: number, a: number, b: number, x: number, s: number, t: number): number {
+  return safeAdd(bitRol(safeAdd(safeAdd(a, q), safeAdd(x, t)), s), b)
+}
+function md5ff(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
+  return md5cmn((b & c) | (~b & d), a, b, x, s, t)
+}
+function md5gg(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
+  return md5cmn((b & d) | (c & ~d), a, b, x, s, t)
+}
+function md5hh(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
+  return md5cmn(b ^ c ^ d, a, b, x, s, t)
+}
+function md5ii(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
+  return md5cmn(c ^ (b | ~d), a, b, x, s, t)
+}
+
+function md5cycle(x: Int32Array, k: Int32Array): void {
+  let [a, b, c, d] = [x[0], x[1], x[2], x[3]]
+
+  a = md5ff(a, b, c, d, k[0], MD5_S[0], MD5_K[0])
+  d = md5ff(d, a, b, c, k[1], MD5_S[1], MD5_K[1])
+  c = md5ff(c, d, a, b, k[2], MD5_S[2], MD5_K[2])
+  b = md5ff(b, c, d, a, k[3], MD5_S[3], MD5_K[3])
+  a = md5ff(a, b, c, d, k[4], MD5_S[4], MD5_K[4])
+  d = md5ff(d, a, b, c, k[5], MD5_S[5], MD5_K[5])
+  c = md5ff(c, d, a, b, k[6], MD5_S[6], MD5_K[6])
+  b = md5ff(b, c, d, a, k[7], MD5_S[7], MD5_K[7])
+  a = md5ff(a, b, c, d, k[8], MD5_S[8], MD5_K[8])
+  d = md5ff(d, a, b, c, k[9], MD5_S[9], MD5_K[9])
+  c = md5ff(c, d, a, b, k[10], MD5_S[10], MD5_K[10])
+  b = md5ff(b, c, d, a, k[11], MD5_S[11], MD5_K[11])
+  a = md5ff(a, b, c, d, k[12], MD5_S[12], MD5_K[12])
+  d = md5ff(d, a, b, c, k[13], MD5_S[13], MD5_K[13])
+  c = md5ff(c, d, a, b, k[14], MD5_S[14], MD5_K[14])
+  b = md5ff(b, c, d, a, k[15], MD5_S[15], MD5_K[15])
+
+  a = md5gg(a, b, c, d, k[1], MD5_S[16], MD5_K[16])
+  d = md5gg(d, a, b, c, k[6], MD5_S[17], MD5_K[17])
+  c = md5gg(c, d, a, b, k[11], MD5_S[18], MD5_K[18])
+  b = md5gg(b, c, d, a, k[0], MD5_S[19], MD5_K[19])
+  a = md5gg(a, b, c, d, k[5], MD5_S[20], MD5_K[20])
+  d = md5gg(d, a, b, c, k[10], MD5_S[21], MD5_K[21])
+  c = md5gg(c, d, a, b, k[15], MD5_S[22], MD5_K[22])
+  b = md5gg(b, c, d, a, k[4], MD5_S[23], MD5_K[23])
+  a = md5gg(a, b, c, d, k[9], MD5_S[24], MD5_K[24])
+  d = md5gg(d, a, b, c, k[14], MD5_S[25], MD5_K[25])
+  c = md5gg(c, d, a, b, k[3], MD5_S[26], MD5_K[26])
+  b = md5gg(b, c, d, a, k[8], MD5_S[27], MD5_K[27])
+  a = md5gg(a, b, c, d, k[13], MD5_S[28], MD5_K[28])
+  d = md5gg(d, a, b, c, k[2], MD5_S[29], MD5_K[29])
+  c = md5gg(c, d, a, b, k[7], MD5_S[30], MD5_K[30])
+  b = md5gg(b, c, d, a, k[12], MD5_S[31], MD5_K[31])
+
+  a = md5hh(a, b, c, d, k[5], MD5_S[32], MD5_K[32])
+  d = md5hh(d, a, b, c, k[8], MD5_S[33], MD5_K[33])
+  c = md5hh(c, d, a, b, k[11], MD5_S[34], MD5_K[34])
+  b = md5hh(b, c, d, a, k[14], MD5_S[35], MD5_K[35])
+  a = md5hh(a, b, c, d, k[1], MD5_S[36], MD5_K[36])
+  d = md5hh(d, a, b, c, k[4], MD5_S[37], MD5_K[37])
+  c = md5hh(c, d, a, b, k[7], MD5_S[38], MD5_K[38])
+  b = md5hh(b, c, d, a, k[10], MD5_S[39], MD5_K[39])
+  a = md5hh(a, b, c, d, k[13], MD5_S[40], MD5_K[40])
+  d = md5hh(d, a, b, c, k[0], MD5_S[41], MD5_K[41])
+  c = md5hh(c, d, a, b, k[3], MD5_S[42], MD5_K[42])
+  b = md5hh(b, c, d, a, k[6], MD5_S[43], MD5_K[43])
+  a = md5hh(a, b, c, d, k[9], MD5_S[44], MD5_K[44])
+  d = md5hh(d, a, b, c, k[12], MD5_S[45], MD5_K[45])
+  c = md5hh(c, d, a, b, k[15], MD5_S[46], MD5_K[46])
+  b = md5hh(b, c, d, a, k[2], MD5_S[47], MD5_K[47])
+
+  a = md5ii(a, b, c, d, k[0], MD5_S[48], MD5_K[48])
+  d = md5ii(d, a, b, c, k[7], MD5_S[49], MD5_K[49])
+  c = md5ii(c, d, a, b, k[14], MD5_S[50], MD5_K[50])
+  b = md5ii(b, c, d, a, k[5], MD5_S[51], MD5_K[51])
+  a = md5ii(a, b, c, d, k[12], MD5_S[52], MD5_K[52])
+  d = md5ii(d, a, b, c, k[3], MD5_S[53], MD5_K[53])
+  c = md5ii(c, d, a, b, k[10], MD5_S[54], MD5_K[54])
+  b = md5ii(b, c, d, a, k[1], MD5_S[55], MD5_K[55])
+  a = md5ii(a, b, c, d, k[8], MD5_S[56], MD5_K[56])
+  d = md5ii(d, a, b, c, k[15], MD5_S[57], MD5_K[57])
+  c = md5ii(c, d, a, b, k[6], MD5_S[58], MD5_K[58])
+  b = md5ii(b, c, d, a, k[13], MD5_S[59], MD5_K[59])
+  a = md5ii(a, b, c, d, k[4], MD5_S[60], MD5_K[60])
+  d = md5ii(d, a, b, c, k[11], MD5_S[61], MD5_K[61])
+  c = md5ii(c, d, a, b, k[2], MD5_S[62], MD5_K[62])
+  b = md5ii(b, c, d, a, k[9], MD5_S[63], MD5_K[63])
+
+  x[0] = safeAdd(a, x[0])
+  x[1] = safeAdd(b, x[1])
+  x[2] = safeAdd(c, x[2])
+  x[3] = safeAdd(d, x[3])
+}
+
+function md5blk(data: Uint8Array): Int32Array {
+  const md5blks = new Int32Array(16)
+  for (let i = 0; i < 64; i += 4) {
+    md5blks[i >> 2] =
+      data[i] |
+      (data[i + 1] << 8) |
+      (data[i + 2] << 16) |
+      (data[i + 3] << 24)
   }
-  function addUnsigned(x: number, y: number): number {
-    const x4 = x & 0x80000000
-    const y4 = y & 0x80000000
-    const x8 = x & 0x00800000
-    const y8 = y & 0x00800000
-    const result = (x & 0x007fffff) + (y & 0x007fffff)
-    if (x4 & y4) return result ^ 0x80000000 ^ x8 ^ y8
-    if (x4 | y4) {
-      if (result & 0x40000000) return result ^ 0xc0000000 ^ x8 ^ y8
-      return result ^ 0x40000000 ^ x8 ^ y8
-    }
-    return result ^ x8 ^ y8
-  }
-  function F(x: number, y: number, z: number): number {
-    return (x & y) | (~x & z)
-  }
-  function G(x: number, y: number, z: number): number {
-    return (x & z) | (y & ~z)
-  }
-  function H(x: number, y: number, z: number): number {
-    return x ^ y ^ z
-  }
-  function I(x: number, y: number, z: number): number {
-    return y ^ (x | ~z)
-  }
-  function FF(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
-    a = addUnsigned(a, addUnsigned(addUnsigned(F(b, c, d), x), t))
-    return addUnsigned(rotateLeft(a, s), b)
-  }
-  function GG(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
-    a = addUnsigned(a, addUnsigned(addUnsigned(G(b, c, d), x), t))
-    return addUnsigned(rotateLeft(a, s), b)
-  }
-  function HH(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
-    a = addUnsigned(a, addUnsigned(addUnsigned(H(b, c, d), x), t))
-    return addUnsigned(rotateLeft(a, s), b)
-  }
-  function II(a: number, b: number, c: number, d: number, x: number, s: number, t: number): number {
-    a = addUnsigned(a, addUnsigned(addUnsigned(I(b, c, d), x), t))
-    return addUnsigned(rotateLeft(a, s), b)
-  }
-  function convertToWordArray(str: string): number[] {
-    let lWordCount: number
-    const lMessageLength = str.length
-    const lNumberOfWords_temp1 = lMessageLength + 8
-    const lNumberOfWords_temp2 = (lNumberOfWords_temp1 - (lNumberOfWords_temp1 % 64)) / 64
-    const lNumberOfWords = (lNumberOfWords_temp2 + 1) * 16
-    const lWordArray = new Array(lNumberOfWords - 1)
-    let lBytePosition = 0
-    let lByteCount = 0
-    while (lByteCount < lMessageLength) {
-      lWordCount = (lByteCount - (lByteCount % 4)) / 4
-      lBytePosition = (lByteCount % 4) * 8
-      lWordArray[lWordCount] = lWordArray[lWordCount] | (str.charCodeAt(lByteCount) << lBytePosition)
-      lByteCount++
-    }
-    lWordCount = (lByteCount - (lByteCount % 4)) / 4
-    lBytePosition = (lByteCount % 4) * 8
-    lWordArray[lWordCount] = lWordArray[lWordCount] | (0x80 << lBytePosition)
-    lWordArray[lNumberOfWords - 2] = lMessageLength << 3
-    lWordArray[lNumberOfWords - 1] = lMessageLength >>> 29
-    return lWordArray
-  }
-  function wordToHex(lValue: number): string {
-    let wordToHexValue = ''
-    let wordToHexValue_temp = ''
-    let lByte: number
-    let lCount: number
-    for (lCount = 0; lCount <= 3; lCount++) {
-      lByte = (lValue >>> (lCount * 8)) & 255
-      wordToHexValue_temp = '0' + lByte.toString(16)
-      wordToHexValue = wordToHexValue + wordToHexValue_temp.substr(wordToHexValue_temp.length - 2, 2)
-    }
-    return wordToHexValue
+  return md5blks
+}
+
+function rstrMD5(data: Uint8Array): Uint8Array {
+  const n = data.length
+  const dataLen = n
+  // 填充：1 个 0x80 + 0 填充到 56 mod 64 + 8 字节长度（小端）
+  const padded = new Uint8Array(((n + 72) >> 6) << 6)
+  padded.set(data)
+  padded[n] = 0x80
+  // 长度按位（小端）
+  const bitLen = dataLen * 8
+  const lo = bitLen >>> 0
+  const hi = Math.floor(bitLen / 0x100000000) >>> 0
+  const lenPos = padded.length - 8
+  padded[lenPos] = lo & 0xff
+  padded[lenPos + 1] = (lo >>> 8) & 0xff
+  padded[lenPos + 2] = (lo >>> 16) & 0xff
+  padded[lenPos + 3] = (lo >>> 24) & 0xff
+  padded[lenPos + 4] = hi & 0xff
+  padded[lenPos + 5] = (hi >>> 8) & 0xff
+  padded[lenPos + 6] = (hi >>> 16) & 0xff
+  padded[lenPos + 7] = (hi >>> 24) & 0xff
+
+  const state = new Int32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476])
+  for (let i = 0; i < padded.length; i += 64) {
+    md5cycle(state, md5blk(padded.subarray(i, i + 64)))
   }
 
-  let x: number[]
-  let k: number
-  let AA: number
-  let BB: number
-  let CC: number
-  let DD: number
-  let a: number
-  let b: number
-  let c: number
-  let d: number
-  const S11 = 7
-  const S12 = 12
-  const S13 = 17
-  const S14 = 22
-  const S21 = 5
-  const S22 = 9
-  const S23 = 14
-  const S24 = 20
-  const S31 = 4
-  const S32 = 11
-  const S33 = 16
-  const S34 = 23
-  const S41 = 6
-  const S42 = 10
-  const S43 = 15
-  const S44 = 21
-
-  const utf8Str = unescape(encodeURIComponent(str))
-  x = convertToWordArray(utf8Str)
-  a = 0x67452301
-  b = 0xefcdab89
-  c = 0x98badcfe
-  d = 0x10325476
-
-  for (k = 0; k < x.length; k += 16) {
-    AA = a
-    BB = b
-    CC = c
-    DD = d
-    a = FF(a, b, c, d, x[k], S11, 0xd76aa478)
-    d = FF(d, a, b, c, x[k + 1], S12, 0xe8c7b756)
-    c = FF(c, d, a, b, x[k + 2], S13, 0x242070db)
-    b = FF(b, c, d, a, x[k + 3], S14, 0xc1bdceee)
-    a = FF(a, b, c, d, x[k + 4], S11, 0xf57c0faf)
-    d = FF(d, a, b, c, x[k + 5], S12, 0x4787c62a)
-    c = FF(c, d, a, b, x[k + 6], S13, 0xa8304613)
-    b = FF(b, c, d, a, x[k + 7], S14, 0xfd469501)
-    a = FF(a, b, c, d, x[k + 8], S11, 0x698098d8)
-    d = FF(d, a, b, c, x[k + 9], S12, 0x8b44f7af)
-    c = FF(c, d, a, b, x[k + 10], S13, 0xffff5bb1)
-    b = FF(b, c, d, a, x[k + 11], S14, 0x895cd7be)
-    a = FF(a, b, c, d, x[k + 12], S11, 0x6b901122)
-    d = FF(d, a, b, c, x[k + 13], S12, 0xfd987193)
-    c = FF(c, d, a, b, x[k + 14], S13, 0xa679438e)
-    b = FF(b, c, d, a, x[k + 15], S14, 0x49b40821)
-    a = GG(a, b, c, d, x[k + 1], S21, 0xf61e2562)
-    d = GG(d, a, b, c, x[k + 6], S22, 0xc040b340)
-    c = GG(c, d, a, b, x[k + 11], S23, 0x265e5a51)
-    b = GG(b, c, d, a, x[k], S24, 0xe9b6c7aa)
-    a = GG(a, b, c, d, x[k + 5], S21, 0xd62f105d)
-    d = GG(d, a, b, c, x[k + 10], S22, 0x2441453)
-    c = GG(c, d, a, b, x[k + 15], S23, 0xd8a1e681)
-    b = GG(b, c, d, a, x[k + 4], S24, 0xe7d3fbc8)
-    a = GG(a, b, c, d, x[k + 9], S21, 0x21e1cde6)
-    d = GG(d, a, b, c, x[k + 14], S22, 0xc33707d6)
-    c = GG(c, d, a, b, x[k + 3], S23, 0xf4d50d87)
-    b = GG(b, c, d, a, x[k + 8], S24, 0x455a14ed)
-    a = GG(a, b, c, d, x[k + 13], S21, 0xa9e3e905)
-    d = GG(d, a, b, c, x[k + 2], S22, 0xfcefa3f8)
-    c = GG(c, d, a, b, x[k + 7], S23, 0x676f02d9)
-    b = GG(b, c, d, a, x[k + 12], S24, 0x8d2a4c8a)
-    a = HH(a, b, c, d, x[k + 5], S31, 0xfffa3942)
-    d = HH(d, a, b, c, x[k + 8], S32, 0x8771f681)
-    c = HH(c, d, a, b, x[k + 11], S33, 0x6d9d6122)
-    b = HH(b, c, d, a, x[k + 14], S34, 0xfde5380c)
-    a = HH(a, b, c, d, x[k + 1], S31, 0xa4beea44)
-    d = HH(d, a, b, c, x[k + 4], S32, 0x4bdecfa9)
-    c = HH(c, d, a, b, x[k + 7], S33, 0xf6bb4b60)
-    b = HH(b, c, d, a, x[k + 10], S34, 0xbebfbc70)
-    a = HH(a, b, c, d, x[k + 13], S31, 0x289b7ec6)
-    d = HH(d, a, b, c, x[k], S32, 0xeaa127fa)
-    c = HH(c, d, a, b, x[k + 3], S33, 0xd4ef3085)
-    b = HH(b, c, d, a, x[k + 6], S34, 0x4881d05)
-    a = HH(a, b, c, d, x[k + 9], S31, 0xd9d4d039)
-    d = HH(d, a, b, c, x[k + 12], S32, 0xe6db99e5)
-    c = HH(c, d, a, b, x[k + 15], S33, 0x1fa27cf8)
-    b = HH(b, c, d, a, x[k + 2], S34, 0xc4ac5665)
-    a = II(a, b, c, d, x[k], S41, 0xf4292244)
-    d = II(d, a, b, c, x[k + 7], S42, 0x432aff97)
-    c = II(c, d, a, b, x[k + 14], S43, 0xab9423a7)
-    b = II(b, c, d, a, x[k + 5], S44, 0xfc93a039)
-    a = II(a, b, c, d, x[k + 12], S41, 0x655b59c3)
-    d = II(d, a, b, c, x[k + 3], S42, 0x8f0ccc92)
-    c = II(c, d, a, b, x[k + 10], S43, 0xffeff47d)
-    b = II(b, c, d, a, x[k + 1], S44, 0x85845dd1)
-    a = II(a, b, c, d, x[k + 8], S41, 0x6fa87e4f)
-    d = II(d, a, b, c, x[k + 15], S42, 0xfe2ce6e0)
-    c = II(c, d, a, b, x[k + 6], S43, 0xa3014314)
-    b = II(b, c, d, a, x[k + 13], S44, 0x4e0811a1)
-    a = II(a, b, c, d, x[k + 4], S41, 0xf7537e82)
-    d = II(d, a, b, c, x[k + 11], S42, 0xbd3af235)
-    c = II(c, d, a, b, x[k + 2], S43, 0x2ad7d2bb)
-    b = II(b, c, d, a, x[k + 9], S44, 0xeb86d391)
-    a = addUnsigned(a, AA)
-    b = addUnsigned(b, BB)
-    c = addUnsigned(c, CC)
-    d = addUnsigned(d, DD)
+  const out = new Uint8Array(16)
+  const dv = new DataView(out.buffer)
+  for (let i = 0; i < 4; i++) {
+    dv.setInt32(i * 4, state[i], true)
   }
-  return (wordToHex(a) + wordToHex(b) + wordToHex(c) + wordToHex(d)).toLowerCase()
+  return out
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  const hex = '0123456789abcdef'
+  let s = ''
+  for (let i = 0; i < bytes.length; i++) {
+    s += hex[(bytes[i] >> 4) & 0x0f] + hex[bytes[i] & 0x0f]
+  }
+  return s
+}
+
+/** md5 哈希，返回 32 字符小写 hex 串。 */
+function md5hex(input: string): string {
+  const bytes = new TextEncoder().encode(input)
+  return bytesToHex(rstrMD5(bytes))
 }
 
 /** 计算分割数。aid=章节 photo_id，filename=图片文件名（不含扩展名，如 "00047"）。 */
-export async function getScrambleNum(
+export function getScrambleNum(
   scrambleId: number,
   aid: number,
   filename: string,
-): Promise<number> {
+): number {
   if (aid < scrambleId) return 0
   if (aid < SCRAMBLE_268850) return 10
   const x = aid < SCRAMBLE_421926 ? 10 : 8
-  const s = await md5hex(`${aid}${filename}`)
+  const s = md5hex(`${aid}${filename}`)
   const last = s.charCodeAt(s.length - 1)
   return (last % x) * 2 + 2
 }

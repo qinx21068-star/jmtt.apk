@@ -22,7 +22,7 @@ async function tryLoad() {
   if (!props.src || displaySrc.value) return
   const parsed = parseImageProxyUrl(props.src)
   if (parsed && parsed.aid && parsed.scrambleId && parsed.filename) {
-    const num = await getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
+    const num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
     displaySrc.value = await decodeImageCached(props.src, num)
   } else {
     displaySrc.value = props.src
