@@ -153,6 +153,13 @@ fun SearchScreen(
         }
     }
 
+    // 搜索开始时收起键盘：避免软键盘遮挡底部导航栏，导致用户搜索后无法切回首页/其他 tab。
+    // 覆盖所有触发 refresh 的场景：debounce 自动搜索、点历史词条、IME 搜索键、换排序。
+    // loadMore 不触发 refreshing，不会误收键盘。
+    LaunchedEffect(state.refreshing) {
+        if (state.refreshing) keyboardController?.hide()
+    }
+
     // 用 Box 包裹以承载 SnackbarHost：长按屏蔽/收藏操作需要反馈
     Box(Modifier.fillMaxSize()) {
      Column(Modifier.fillMaxSize()) {

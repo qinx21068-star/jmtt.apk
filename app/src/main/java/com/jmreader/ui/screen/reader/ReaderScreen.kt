@@ -477,8 +477,7 @@ private fun VerticalReader(
         contentPadding = PaddingValues(vertical = 4.dp),
     ) {
         items(images, key = { it }) { path ->
-            // 竖向滚动用普通 AsyncImage：不带手势检测，滚动更流畅
-            ReaderImage(path = path, zoomable = false, onTap = onTap, modifier = Modifier.fillMaxWidth())
+            ReaderImage(path = path, onTap = onTap, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -512,24 +511,28 @@ private fun HorizontalReader(
     ) { page ->
         // 越界保护：page 理论上不会越界，但加保护避免极端情况闪退
         val path = images.getOrNull(page) ?: return@HorizontalPager
-        ReaderImage(path = path, zoomable = true, onTap = onTap, modifier = Modifier.fillMaxSize())
+        ReaderImage(path = path, onTap = onTap, modifier = Modifier.fillMaxSize())
     }
 }
 
 /**
- * 单张阅读图片：远程 URL 或本地文件。双击缩放 1x↔2x，单击切换 UI 显隐。
+ * 单张阅读图片：远程 URL 或本地文件。统一用 telephoto 的 .zoomable() 提供手势。
  *
- * - zoomable=true（横滑模式）：用 telephoto ZoomableAsyncImage，maxZoomFactor=2f。
- *   telephoto 默认双击循环在 1x 和 maxZoom 间切换，配置后即 1x↔2x；
- *   同时支持双指缩放、放大后拖拽平移。单击透传给 [onTap] 切换顶/底栏。
- * - zoomable=false（竖滑模式）：用 AsyncImage + graphicsLayer + detectTapGestures。
- *   双击在 1x/2x 间切换（以中心放大），单击切顶/底栏。
- *   放大后不处理平移（避免与 LazyColumn 滚动冲突），想平移看细节请切横滑模式。
+ * 手势能力（竖滑/横滑一致）：
+ * - 双指缩放（maxZoomFactor=3f）
+ * - 双击在 1x / maxZoom 间切换
+ * - 放大后拖拽平移查看细节
+ * - 单击切顶/底栏显隐（通过 zoomable 的 onClick 参数，不额外加 pointerInput）
+ *
+ * 关键修复：
+ * - 竖滑模式原来用 graphicsLayer 中心放大，无法平移 → 改用 telephoto 完整缩放+平移。
+ * - 横滑模式原来叠加 detectTapGestures(onTap) 会消费指针事件导致 HorizontalPager 拿不到拖拽
+ *   → 改用 zoomable 的 onClick 参数，手势由 telephoto 统一调度，1x 时放行滚动给父容器。
+ * - 横滑模式原来无 onState 错误提示，加载失败静默黑屏 → 现在统一显示加载/错误状态。
  */
 @Composable
 private fun ReaderImage(
     path: String,
-    zoomable: Boolean,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -543,66 +546,39 @@ private fun ReaderImage(
             else -> File(path)
         }
     }
+    val zoomState = me.saket.telephoto.zoomable.rememberZoomableState(
+        zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = 3f)
+    )
+    var imgState by remember(path) {
+        mutableStateOf<coil.compose.AsyncImagePainter.State>(coil.compose.AsyncImagePainter.State.Empty)
+    }
     Box(modifier = modifier.background(Color(0xFF1A1A1A)), contentAlignment = Alignment.Center) {
-        if (zoomable) {
-            // 横滑：telephoto 完整缩放（双击 1x↔2x、双指、平移）
-            val zoomState = me.saket.telephoto.zoomable.rememberZoomableState(
-                zoomSpec = me.saket.telephoto.zoomable.ZoomSpec(maxZoomFactor = 2f)
-            )
-            me.saket.telephoto.zoomable.coil.ZoomableAsyncImage(
-                model = model,
-                contentDescription = null,
-                contentScale = ContentScale.FillWidth,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .zoomable(zoomState)
-                    // 单击切换 UI 显隐（telephoto 只消费双击/双指，单击会冒泡到这里）
-                    .pointerInput(Unit) {
-                        detectTapGestures(onTap = { onTap() })
-                    },
-            )
-        } else {
-            // 竖滑：AsyncImage + 双击缩放 1x↔2x（中心放大），单击切 UI
-            var scale by remember(path) { mutableFloatStateOf(1f) }
-            val animScale by animateFloatAsState(targetValue = scale, label = "imgScale")
-            var imgState by remember(path) {
-                mutableStateOf<coil.compose.AsyncImagePainter.State>(coil.compose.AsyncImagePainter.State.Empty)
+        coil.compose.AsyncImage(
+            model = model,
+            contentDescription = null,
+            contentScale = ContentScale.FillWidth,
+            onState = { imgState = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .zoomable(zoomState, onClick = { onTap() }),
+        )
+        when (val s = imgState) {
+            is coil.compose.AsyncImagePainter.State.Loading -> {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(36.dp))
             }
-            coil.compose.AsyncImage(
-                model = model,
-                contentDescription = null,
-                contentScale = ContentScale.FillWidth,
-                onState = { imgState = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer(scaleX = animScale, scaleY = animScale)
-                    .pointerInput(path) {
-                        detectTapGestures(
-                            onTap = { onTap() },
-                            onDoubleTap = {
-                                scale = if (scale > 1.5f) 1f else 2f
-                            }
-                        )
-                    },
-            )
-            when (val s = imgState) {
-                is coil.compose.AsyncImagePainter.State.Loading -> {
-                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(36.dp))
+            is coil.compose.AsyncImagePainter.State.Error -> {
+                com.jmreader.core.Logger.w("Reader", "图片加载失败: $path, ${com.jmreader.core.Logger.brief(s.result.throwable)}")
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("加载失败", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = com.jmreader.core.Logger.friendlyError(com.jmreader.core.Logger.brief(s.result.throwable)),
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
-                is coil.compose.AsyncImagePainter.State.Error -> {
-                    com.jmreader.core.Logger.w("Reader", "图片加载失败: $path, ${com.jmreader.core.Logger.brief(s.result.throwable)}")
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("加载失败", color = Color.White, style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            text = com.jmreader.core.Logger.friendlyError(com.jmreader.core.Logger.brief(s.result.throwable)),
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                }
-                else -> {}
             }
+            else -> {}
         }
     }
 }

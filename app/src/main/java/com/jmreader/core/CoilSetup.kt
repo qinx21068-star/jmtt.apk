@@ -48,12 +48,14 @@ object CoilSetup : ImageLoaderFactory {
                 if (dc != null) add(JmImageFetcher.Factory(client, dc))
             }
             .memoryCache {
-                MemoryCache.Builder(ctx).maxSizePercent(0.25).build()
+                // 阅读器长图列表划回去重新加载的根因是内存缓存太小（原 25%）导致 bitmap 被挤出，
+                // LazyColumn 回收 item 后再进入视口需重新解码。提到 50% 显著减少重新解码。
+                MemoryCache.Builder(ctx).maxSizePercent(0.50).build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(ctx.cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(100L * 1024 * 1024)
+                    .maxSizeBytes(200L * 1024 * 1024)
                     .build()
             }
             // 关键性能优化：不开全局 crossfade。

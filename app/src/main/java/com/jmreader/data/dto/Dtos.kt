@@ -50,6 +50,8 @@ data class ComicDetailDto(
     val cover: String? = null,
     val likes: String? = null,
     val views: String? = null,
+    /** 发布时间（禁漫 API publishtime 字段，格式 "YYYY-MM-DD"）。 */
+    val publishedTime: String? = null,
     val chapters: List<ChapterDto> = emptyList(),
 )
 

@@ -444,6 +444,7 @@ class JmDirectClient {
             cover = cover,
             likes = data.optString("likes").ifBlank { null },
             views = data.optString("total_views").ifBlank { null },
+            publishedTime = data.optString("publishtime").ifBlank { null },
             chapters = chapters,
         )
     }

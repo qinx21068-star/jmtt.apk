@@ -26,6 +26,9 @@ object JmImageDecoder {
 
     /** 计算分割数。aid 为章节(photo)id，filename 为图片文件名（不含扩展名，如 "00047"）。 */
     fun getScrambleNum(scrambleId: Long, aid: Long, filename: String): Int {
+        // scrambleId 解析失败（0或负数）时一律不分割，避免错误重排未分割的图导致显示乱码/黑屏。
+        // 正常协议下 scrambleId 为章节 id 阈值，aid < scrambleId 表示该章节早于分割算法上线，无需分割。
+        if (scrambleId <= 0L) return 0
         if (aid < scrambleId) return 0
         if (aid < JMCrypto.SCRAMBLE_268850) return 10
         val x = if (aid < JMCrypto.SCRAMBLE_421926) 10 else 8

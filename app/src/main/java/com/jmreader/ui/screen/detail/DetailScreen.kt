@@ -358,6 +358,20 @@ private fun DetailContent(
                 )
                 Column(Modifier.weight(1f)) {
                     Text(detail.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    // JM 号 + 发布时间：原详情页缺失，用户无法看到本子编号和发布日期。
+                    // JM 号即 album id，发布时间来自禁漫 API publishtime 字段（格式 YYYY-MM-DD）。
+                    val metaText = buildList {
+                        add("JM ${detail.id}")
+                        detail.publishedTime?.takeIf { it.isNotBlank() }?.let { add(it) }
+                    }.joinToString("  ·  ")
+                    if (metaText.isNotBlank()) {
+                        Text(
+                            text = metaText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
                     detail.author?.let { author ->
                         Spacer(Modifier.height(4.dp))
                         // 作者名 + 屏蔽按钮：
