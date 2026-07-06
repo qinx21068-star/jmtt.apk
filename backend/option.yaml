@@ -1,0 +1,26 @@
+# jmcomic 配置文件（JMReader 后端使用）
+# 文档：https://github.com/hect0x7/JMComic-Crawler-Python
+# 站点经常换域，请把 domain 改成当前可用的域名。
+
+plugins:
+  # 关闭客户端内置日志噪音
+  log: null
+
+client:
+  impl: api            # api=移动端接口；web=网页抓取
+  domain:
+    - 18comic.vip
+    - 18comic.org
+  retry_times: 5
+  cache_expire: 600
+
+download:
+  cache: true
+  dir: ./downloads
+  filename: "{album_id}/{chapter_index}_{photo_id}/{page:03d}.jpg"
+  # 下载时自动解密分割图
+  image_suffix: .jpg
+
+download_cache:
+  # 缓存已下载图片，避免重复请求被风控
+  enable: true

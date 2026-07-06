@@ -1,0 +1,45 @@
+# ===== 构建产物 / Build outputs =====
+/build
+/app/build
+/build-outputs
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+
+# Kotlin / Compose 编译器报告
+.kotlin/
+app/compose-reports/
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+.externalNativeBuild/
+.cxx/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 本地配置（含 SDK 路径，不该进仓库）
+local.properties
+
+# ===== 签名密钥（绝对不能提交，泄露后任何人都能伪造你的应用更新）=====
+*.keystore
+*.jks
+keystore.properties
+release.keystore
+
+# 日志
+*.log
+
+# 备份
+*.bak
+*.swp
+*~

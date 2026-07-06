@@ -1,0 +1,82 @@
+<resources>
+    <string name="app_name">本子天国</string>
+
+    <!-- 底部导航 -->
+    <string name="nav_home">首页</string>
+    <string name="nav_search">搜索</string>
+    <string name="nav_favorites">收藏</string>
+    <string name="nav_downloads">下载</string>
+    <string name="nav_forum">讨论区</string>
+    <string name="nav_settings">设置</string>
+
+    <!-- 通用 -->
+    <string name="retry">重试</string>
+    <string name="loading">加载中…</string>
+    <string name="empty">没有数据</string>
+    <string name="error_generic">出错了：%1$s</string>
+    <string name="more">更多</string>
+    <string name="back">返回</string>
+
+    <!-- 首页 -->
+    <string name="home_latest">最新</string>
+    <string name="home_ranking">排行</string>
+
+    <!-- 搜索 -->
+    <string name="search_hint">搜索漫画 / 作者</string>
+    <string name="search_order_latest">最新</string>
+    <string name="search_order_views">观看</string>
+    <string name="search_order_likes">评论</string>
+    <string name="search_order_picture">图片数</string>
+
+    <!-- 详情 -->
+    <string name="detail_chapters">章节</string>
+    <string name="detail_favorite">收藏</string>
+    <string name="detail_unfavorite">取消收藏</string>
+    <string name="detail_download">下载</string>
+    <string name="detail_read">开始阅读</string>
+    <string name="detail_continue">继续阅读</string>
+
+    <!-- 阅读器 -->
+    <string name="reader_prev">上一章</string>
+    <string name="reader_next">下一章</string>
+    <string name="reader_page">第 %1$d / %2$d 页</string>
+
+    <!-- 设置 -->
+    <string name="settings_server">后端地址（可选）</string>
+    <string name="settings_server_hint">留空=直连模式（推荐）；填写=走后端</string>
+    <string name="settings_server_help">默认直连模式：App 直接访问禁漫移动端 API，单机即可使用，无需配置后端。\n\n后端模式（高级）：填后端地址（如 http://192.168.1.100:8000），走 Python backend + jmcomic 库。适合需要服务端整本下载、Cookie 共享等场景。</string>
+    <string name="settings_account">账号</string>
+    <string name="settings_login">登录</string>
+    <string name="settings_logout">退出登录</string>
+    <string name="settings_blocked_tags">屏蔽 Tag</string>
+    <string name="settings_blocked_tags_desc">含任意一个被屏蔽 Tag 的漫画将不会出现在列表中（标题列表无 Tag 时会自动补全）</string>
+    <string name="settings_add_tag">添加 Tag</string>
+    <string name="settings_blocked_names">屏蔽本子名称</string>
+    <string name="settings_blocked_names_desc">标题包含任意一个关键词的本子将不会出现在列表中（支持繁简归一化）</string>
+    <string name="settings_add_name">添加名称关键词</string>
+    <string name="block_this_name">屏蔽此本子（按名称）</string>
+    <string name="block_this_tags">屏蔽其 Tag</string>
+    <string name="block_added">已加入屏蔽，列表已刷新</string>
+    <string name="settings_theme">主题</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_reader_direction">阅读方向</string>
+    <string name="settings_reader_vertical">上下滚动</string>
+    <string name="settings_reader_horizontal">左右翻页</string>
+    <string name="settings_about">关于</string>
+
+    <!-- 设置分组标题 -->
+    <string name="settings_group_appearance">外观</string>
+    <string name="settings_group_reading">阅读</string>
+    <string name="settings_group_network">网络</string>
+    <string name="settings_group_filter">内容过滤</string>
+    <string name="settings_group_account">账号</string>
+    <string name="settings_group_about">关于</string>
+
+    <!-- 性能选项 -->
+    <string name="settings_max_refresh_rate">强制最高刷新率</string>
+    <string name="settings_max_refresh_rate_desc">锁定屏幕支持的最高刷新率（如 120Hz），列表/阅读器更流畅，但更耗电。Android 11+ 生效。</string>
+    <string name="settings_dynamic_color">动态取色</string>
+    <string name="settings_dynamic_color_desc">根据壁纸自动生成配色（Android 12+）</string>
+</resources>

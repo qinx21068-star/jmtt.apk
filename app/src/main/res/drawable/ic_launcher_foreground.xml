@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 圆角背景填充（让 splash 图标不是裸白图标，更精致） -->
+    <path
+        android:fillColor="#7C4DFF"
+        android:pathData="M30,28 L78,28 C82,28 85,31 85,35 L85,73 C85,77 82,80 78,80 L30,80 C26,80 23,77 23,73 L23,35 C23,31 26,28 30,28 Z" />
+
+    <!-- 书本（翻开的书页，白色） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,40 L54,40 L54,72 L38,72 C36.5,72 35.5,71 35.5,69.5 L35.5,42.5 C35.5,41 36.5,40 38,40 Z" />
+    <path
+        android:fillColor="#F0EFFF"
+        android:pathData="M70,40 L54,40 L54,72 L70,72 C71.5,72 72.5,71 72.5,69.5 L72.5,42.5 C72.5,41 71.5,40 70,40 Z" />
+
+    <!-- 书页内的横线（文字暗示） -->
+    <path android:fillColor="#7C4DFF" android:pathData="M40,48 L51,48 L51,50 L40,50 Z" />
+    <path android:fillColor="#7C4DFF" android:pathData="M40,54 L51,54 L51,56 L40,56 Z" />
+    <path android:fillColor="#7C4DFF" android:pathData="M40,60 L48,60 L48,62 L40,62 Z" />
+    <path android:fillColor="#9575FF" android:pathData="M57,48 L68,48 L68,50 L57,50 Z" />
+    <path android:fillColor="#9575FF" android:pathData="M57,54 L68,54 L68,56 L57,56 Z" />
+    <path android:fillColor="#9575FF" android:pathData="M57,60 L65,60 L65,62 L57,62 Z" />
+
+    <!-- 书脊高光 -->
+    <path android:fillColor="#FFFFFF" android:alpha="0.35" android:pathData="M53.5,40 L54.5,40 L54.5,72 L53.5,72 Z" />
+</vector>
