@@ -133,7 +133,8 @@ function goAbout() {
 }
 
 onMounted(() => {
-  workerUrlInput.value = getWorkerUrl()
+  // 用户自定义的 URL（如有），否则留空让 placeholder 显示默认地址
+  workerUrlInput.value = localStorage.getItem('jmtt-worker-url') || ''
 })
 </script>
 
@@ -198,7 +199,7 @@ onMounted(() => {
         <input
           v-model="workerUrlInput"
           type="text"
-          placeholder="https://your-worker.workers.dev"
+          placeholder="https://jmtt-proxy.qinx21068.workers.dev（默认，留空即用）"
           class="mb-2 w-full rounded-lg border px-3 py-2 text-sm outline-none"
           :style="{
             background: 'var(--bg-card)',
@@ -235,7 +236,7 @@ onMounted(() => {
           {{ workerTestResult.ok ? '✓ ' : '✗ ' }}{{ workerTestResult.msg }}
         </p>
         <p class="mt-2 text-[11px] leading-relaxed" style="color: var(--text-muted)">
-          留空则使用与当前站点同源的 /api 路径。需自行部署 Worker 代理，详见 GitHub README。
+          已内置默认代理地址，留空即可直接使用。如自部署 Worker 可填入覆盖。
         </p>
       </div>
     </section>

@@ -6,8 +6,8 @@
  */
 import type { ApiResponse } from './types'
 
-/** 默认 Worker 地址（用户可覆盖）。 */
-const DEFAULT_WORKER_URL = ''
+/** 默认 Worker 地址（用户可在设置页覆盖）。 */
+const DEFAULT_WORKER_URL = 'https://jmtt-proxy.qinx21068.workers.dev'
 
 const STORAGE_KEY_WORKER_URL = 'jmtt-worker-url'
 
