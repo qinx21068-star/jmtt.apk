@@ -1,0 +1,16 @@
+name = "jmtt-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# 部署后地址：https://jmtt-proxy.<你的子域>.workers.dev
+# 把这个地址填入 PWA 设置页的"代理地址"输入框
+
+# 可选：限制只允许你的 PWA 域名调用（防止被滥用）
+# [vars]
+# ALLOWED_ORIGIN = "https://qinx21068-star.github.io"
+
+# 登录态持久化（可选，免费额度足够）
+# [[kv_namespaces]]
+# binding = "SESSIONS"
+# id = "你的 KV namespace ID"

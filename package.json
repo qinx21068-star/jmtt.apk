@@ -1,0 +1,33 @@
+{
+  "name": "jmtt-pwa",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "check": "vue-tsc -b"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "dexie": "^4.0.8",
+    "lucide-vue-next": "^0.511.0",
+    "pinia": "^2.2.2",
+    "tailwind-merge": "^3.3.0",
+    "vue": "^3.4.15",
+    "vue-router": "^4.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@vitejs/plugin-vue": "^5.0.3",
+    "@vue/tsconfig": "^0.7.0",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.35",
+    "tailwindcss": "^3.4.1",
+    "typescript": "~5.3.3",
+    "vite": "^5.0.12",
+    "vite-plugin-pwa": "^0.20.5",
+    "vue-tsc": "^1.8.27"
+  }
+}
