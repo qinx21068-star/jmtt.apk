@@ -10,7 +10,8 @@ import DisclaimerDialog from '@/components/DisclaimerDialog.vue'
 const router = useRouter()
 const showDisclaimer = ref(false)
 
-const version = '1.0.0'
+const version = '1.0.1'
+const buildTime = '2026-07-06'
 
 const techStack = [
   'Vue 3 + TypeScript',
@@ -77,7 +78,7 @@ function closeDisclaimer() {
           本子天国
         </h1>
         <p class="mt-1 text-xs" style="color: var(--text-muted)">
-          PWA 网页版 · v{{ version }}
+          PWA 网页版 · v{{ version }} · {{ buildTime }}
         </p>
       </div>
 

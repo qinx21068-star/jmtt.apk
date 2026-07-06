@@ -23,8 +23,16 @@ async function tryLoad() {
   const parsed = parseImageProxyUrl(props.src)
   if (parsed && parsed.aid && parsed.scrambleId && parsed.filename) {
     const num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
+    // 调试日志：输出 scramble 参数，用于排查图片错乱
+    console.log('[ReaderImage] scramble decode', {
+      aid: parsed.aid,
+      scrambleId: parsed.scrambleId,
+      filename: parsed.filename,
+      num,
+    })
     displaySrc.value = await decodeImageCached(props.src, num)
   } else {
+    console.log('[ReaderImage] no scramble params, direct load', props.src)
     displaySrc.value = props.src
   }
 }

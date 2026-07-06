@@ -243,16 +243,24 @@ export async function decodeImage(srcUrl: string, num: number): Promise<string> 
   const resp = await fetch(srcUrl)
   if (!resp.ok) throw new Error(`图片加载失败: ${resp.status}`)
   const blob = await resp.blob()
-  const bitmap = await createImageBitmap(blob)
-  const w = bitmap.width
-  const h = bitmap.height
+
+  // 用 Image 对象代替 createImageBitmap，兼容性更好且不会应用 EXIF 旋转
+  const img = new Image()
+  img.src = URL.createObjectURL(blob)
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve()
+    img.onerror = () => reject(new Error('图片解码失败'))
+  })
+
+  const w = img.naturalWidth
+  const h = img.naturalHeight
 
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
   if (!ctx) {
-    bitmap.close?.()
+    URL.revokeObjectURL(img.src)
     return srcUrl
   }
   // 黑色背景
@@ -270,10 +278,10 @@ export async function decodeImage(srcUrl: string, num: number): Promise<string> 
     } else {
       yDst += over
     }
-    // 从源 (0, ySrc, w, ySrc+move) 贴到目标 (0, yDst, w, yDst+move)
-    ctx.drawImage(bitmap, 0, ySrc, w, move, 0, yDst, w, move)
+    // 从源 (0, ySrc, w, move) 贴到目标 (0, yDst, w, move)
+    ctx.drawImage(img, 0, ySrc, w, move, 0, yDst, w, move)
   }
-  bitmap.close?.()
+  URL.revokeObjectURL(img.src)
 
   return new Promise<string>((resolve) => {
     canvas.toBlob(
