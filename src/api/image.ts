@@ -244,13 +244,18 @@ export async function decodeImage(srcUrl: string, num: number): Promise<string> 
   if (!resp.ok) throw new Error(`图片加载失败: ${resp.status}`)
   const blob = await resp.blob()
 
-  // 用 Image 对象代替 createImageBitmap，兼容性更好且不会应用 EXIF 旋转
+  // 用 Image 对象代替 createImageBitmap，兼容性更好且不会应用 EXIF 旋转。
+  // 关键：必须先绑定 onload/onerror 再设置 src，否则 blob URL 加载极快，
+  // load 事件会在绑定前触发，Promise 永远不 resolve，导致 decodeImage 卡死、
+  // 阅读器图片 displaySrc 永远为空 → 表现为"内容全黑"。
   const img = new Image()
-  img.src = URL.createObjectURL(blob)
-  await new Promise<void>((resolve, reject) => {
+  const objectUrl = URL.createObjectURL(blob)
+  const loadPromise = new Promise<void>((resolve, reject) => {
     img.onload = () => resolve()
     img.onerror = () => reject(new Error('图片解码失败'))
   })
+  img.src = objectUrl
+  await loadPromise
 
   const w = img.naturalWidth
   const h = img.naturalHeight

@@ -23,14 +23,19 @@ async function tryLoad() {
   const parsed = parseImageProxyUrl(props.src)
   if (parsed && parsed.aid && parsed.scrambleId && parsed.filename) {
     const num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
-    // 调试日志：输出 scramble 参数，用于排查图片错乱
     console.log('[ReaderImage] scramble decode', {
       aid: parsed.aid,
       scrambleId: parsed.scrambleId,
       filename: parsed.filename,
       num,
     })
-    displaySrc.value = await decodeImageCached(props.src, num)
+    try {
+      displaySrc.value = await decodeImageCached(props.src, num)
+    } catch (e) {
+      // 解码失败时 fallback 到原图（虽然会是乱的 scramble 图），避免黑屏
+      console.warn('[ReaderImage] decode failed, fallback to raw url:', e)
+      displaySrc.value = props.src
+    }
   } else {
     console.log('[ReaderImage] no scramble params, direct load', props.src)
     displaySrc.value = props.src

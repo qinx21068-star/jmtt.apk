@@ -41,7 +41,12 @@ async function tryLoad() {
   const parsed = parseImageProxyUrl(props.src)
   if (parsed && parsed.aid && parsed.scrambleId && parsed.filename) {
     const num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename)
-    displaySrc.value = await decodeImageCached(props.src, num)
+    try {
+      displaySrc.value = await decodeImageCached(props.src, num)
+    } catch (e) {
+      console.warn('[JmImage] decode failed, fallback to raw url:', e)
+      displaySrc.value = props.src
+    }
   } else {
     displaySrc.value = props.src
   }
