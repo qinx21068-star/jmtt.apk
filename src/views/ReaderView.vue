@@ -15,7 +15,7 @@ import { chapterImages } from '@/api/jm'
 import type { ChapterImages, ComicDetail } from '@/api/types'
 import { comicDetail } from '@/api/jm'
 import { getHistory, saveHistory, getLastChapterOfComic } from '@/db/repositories/history'
-import JmImage from '@/components/JmImage.vue'
+import ReaderImage from '@/components/ReaderImage.vue'
 import ErrorState from '@/components/ErrorState.vue'
 
 const route = useRoute()
@@ -191,15 +191,11 @@ onUnmounted(() => {
       @click.self="toggleControls"
     >
       <div class="mx-auto flex max-w-3xl flex-col items-center">
-        <img
+        <ReaderImage
           v-for="(img, idx) in images"
           :key="idx"
           :src="img"
-          loading="lazy"
-          decoding="async"
-          class="block w-full"
           @click="toggleControls"
-          @error="(e) => (e.target as HTMLImageElement).style.opacity = '0.2'"
         />
         <!-- 章节末尾操作 -->
         <div class="flex w-full items-center justify-center gap-3 py-6 text-white/80">

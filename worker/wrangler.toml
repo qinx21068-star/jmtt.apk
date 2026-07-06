@@ -1,7 +1,8 @@
 name = "jmtt-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
-compatibility_flags = ["nodejs_compat"]
+# 不再需要 nodejs_compat：MD5 和 AES-256-ECB 都用纯 JS 实现
+# Worker runtime 的 node:crypto 不支持 createDecipheriv
 
 # 部署后地址：https://jmtt-proxy.<你的子域>.workers.dev
 # 把这个地址填入 PWA 设置页的"代理地址"输入框
