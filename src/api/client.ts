@@ -80,6 +80,12 @@ async function parseResponse<T>(resp: Response): Promise<T> {
     throw new Error(`HTTP ${resp.status}: ${resp.statusText}`)
   }
   const text = await resp.text()
+  // 检测 HTML 响应（通常是 Worker URL 未配置导致落到静态托管）
+  if (text.trimStart().startsWith('<') || text.includes('<!DOCTYPE')) {
+    throw new Error(
+      'Worker 代理未配置：返回了 HTML 而非 JSON。请在「设置 → 网络代理」填入 Cloudflare Worker URL',
+    )
+  }
   let json: ApiResponse<T>
   try {
     json = JSON.parse(text) as ApiResponse<T>

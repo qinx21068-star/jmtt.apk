@@ -44,20 +44,54 @@ const workerTesting = ref(false)
 const workerTestResult = ref<{ ok: boolean; msg: string } | null>(null)
 
 async function saveWorkerUrl() {
-  settings.setWorkerUrl(workerUrlInput.value)
-  workerTestResult.value = null
+  const url = workerUrlInput.value.trim()
+  if (url && !/^https?:\/\//i.test(url)) {
+    workerTestResult.value = {
+      ok: false,
+      msg: 'URL 必须以 http:// 或 https:// 开头',
+    }
+    return
+  }
+  settings.setWorkerUrl(url)
+  workerTestResult.value = { ok: true, msg: '已保存' }
+  // 2 秒后清空"已保存"提示
+  setTimeout(() => {
+    if (workerTestResult.value?.msg === '已保存') {
+      workerTestResult.value = null
+    }
+  }, 2000)
 }
 
 async function testWorker() {
+  const url = workerUrlInput.value.trim()
+  if (!url) {
+    workerTestResult.value = { ok: false, msg: '请先填入 Worker URL' }
+    return
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    workerTestResult.value = {
+      ok: false,
+      msg: 'URL 必须以 http:// 或 https:// 开头',
+    }
+    return
+  }
   // 先保存再测试
-  settings.setWorkerUrl(workerUrlInput.value)
+  settings.setWorkerUrl(url)
   workerTesting.value = true
   workerTestResult.value = null
   try {
     const data = await get<{ status: string; time: number }>('/api/health')
-    workerTestResult.value = { ok: true, msg: `连接正常 (${data.time}ms)` }
+    workerTestResult.value = { ok: true, msg: `连接正常 (${data.time}ms)，已自动保存` }
   } catch (e: any) {
-    workerTestResult.value = { ok: false, msg: e?.message || '连接失败' }
+    const msg = e?.message || '连接失败'
+    if (msg.includes('DOCTYPE') || msg.includes('<html')) {
+      workerTestResult.value = {
+        ok: false,
+        msg: 'Worker URL 无效或未部署：返回了 HTML 而非 JSON',
+      }
+    } else {
+      workerTestResult.value = { ok: false, msg }
+    }
   } finally {
     workerTesting.value = false
   }
