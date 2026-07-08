@@ -32,7 +32,7 @@ const apiDomainServerUrls = [
 ]
 
 // ---- 图片 CDN 域名池 ----
-const imageDomains = [
+export const imageDomains = [
   'cdn-msp.jmapiproxy1.cc',
   'cdn-msp.jmapiproxy2.cc',
   'cdn-msp2.jmapiproxy2.cc',

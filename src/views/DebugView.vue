@@ -35,10 +35,15 @@ function update(s: Step, status: Step['status'], detail: string, data?: any) {
 }
 
 async function run() {
-  // 1. Worker URL
-  const s1 = addStep('1. Worker URL')
-  const workerUrl = getWorkerUrl()
-  update(s1, 'info', `当前 Worker: ${workerUrl}`)
+  // 0. 页面已加载（确认 JS 执行到了这里）
+  const s0 = addStep('0. 诊断脚本启动')
+  update(s0, 'ok', 'DebugView 已加载，开始诊断…')
+
+  try {
+    // 1. Worker URL
+    const s1 = addStep('1. Worker URL')
+    const workerUrl = getWorkerUrl()
+    update(s1, 'info', `当前 Worker: ${workerUrl}`)
 
   // 2. Health
   const s2 = addStep('2. Worker 健康检查 /api/health')
@@ -153,6 +158,11 @@ async function run() {
   } catch (e: any) {
     update(s7, 'fail', e?.message || String(e))
   }
+  } catch (e: any) {
+    // 整个 run 的兜底：任何未预期的错误都显示出来
+    const sErr = addStep('❌ 诊断脚本异常')
+    update(sErr, 'fail', e?.message || String(e) + '\n' + (e?.stack || ''))
+  }
 }
 
 onMounted(() => run())
@@ -161,7 +171,10 @@ onMounted(() => run())
 <template>
   <div class="min-h-screen p-4" style="background: #0a0a0a; color: #e5e5e5">
     <div class="mx-auto max-w-2xl">
-      <h1 class="mb-4 text-xl font-bold">PWA 诊断</h1>
+      <h1 class="mb-2 text-xl font-bold">PWA 诊断</h1>
+      <p class="mb-4 text-xs" style="color: #6b7280">
+        如果你看到这段文字，说明 DebugView 模板已渲染。如果下面没有检查项，说明 JS 报错了，请打开 F12 控制台看错误。
+      </p>
 
       <!-- 步骤列表 -->
       <div class="space-y-3">

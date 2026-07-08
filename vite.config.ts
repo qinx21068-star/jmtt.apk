@@ -49,16 +49,17 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff,woff2}'],
         // 不缓存图片 API 响应（图片走 Worker 代理 + 浏览器 HTTP 缓存）
         navigateFallback: 'index.html',
-        runtimeCaching: [
-          {
-            urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 },
-            },
-          },
-        ],
+        // 关键：skipWaiting + clientsClaim 让新 SW 立即接管，
+        // 否则用户必须关闭所有标签页才能拿到新代码，导致阅读器图片修复无法生效
+        skipWaiting: true,
+        clientsClaim: true,
+        // 不缓存 /api/* 响应：之前 NetworkFirst 会把 Worker 不可达时的 HTML 404
+        // 错误响应也缓存下来，导致即使 Worker 修好，SW 仍返回缓存的 HTML
+        // → 前端报"响应解析失败: <!DOCTYPE html>"。
+        // 移除 runtimeCaching 后，API 请求直连 Worker，不走 SW 缓存。
+        runtimeCaching: [],
+        // 清理旧 SW 留下的缓存（api-cache 等），避免旧错误响应残留
+        cleanupOutdatedCaches: true,
       },
       devOptions: {
         enabled: false,

@@ -1,22 +1,21 @@
 <script setup lang="ts">
 /**
- * 阅读器图片组件：全宽自适应 + scramble 解码 + 懒加载。
+ * 阅读器图片组件：全宽自适应 + scramble 解码。
  *
- * 专为阅读器设计（与 JmImage 区别：不固定宽高比，图片原始比例显示）。
+ * 简化版：不用 IntersectionObserver（阅读器滚动容器不是视口，IO 用视口做 root
+ * 会失效，导致 tryLoad 永不触发 → 黑屏）。阅读器一次只展示一个章节，图片数有限，
+ * 直接加载即可。
  */
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch } from 'vue'
 import { decodeImageCached, getScrambleNum, parseImageProxyUrl } from '@/api/image'
 
 const props = defineProps<{
   src: string
 }>()
 
-const container = ref<HTMLDivElement | null>(null)
 const displaySrc = ref<string>('')
 const loaded = ref(false)
 const error = ref(false)
-const inView = ref(false)
-let observer: IntersectionObserver | null = null
 
 async function tryLoad() {
   if (!props.src || displaySrc.value) return
@@ -28,6 +27,7 @@ async function tryLoad() {
       scrambleId: parsed.scrambleId,
       filename: parsed.filename,
       num,
+      url: props.src,
     })
     try {
       displaySrc.value = await decodeImageCached(props.src, num)
@@ -43,47 +43,30 @@ async function tryLoad() {
 }
 
 function onImgLoad() {
+  console.log('[ReaderImage] img loaded', displaySrc.value.slice(0, 80))
   loaded.value = true
 }
 function onImgError() {
+  console.warn('[ReaderImage] img error', displaySrc.value.slice(0, 80))
   error.value = true
   loaded.value = true
 }
 
+// src 变化时重置并重新加载
 watch(
   () => props.src,
   () => {
     displaySrc.value = ''
     loaded.value = false
     error.value = false
-    if (inView.value) tryLoad()
+    tryLoad()
   },
+  { immediate: true },
 )
-
-onMounted(() => {
-  if (!container.value) return
-  observer = new IntersectionObserver(
-    (entries) => {
-      for (const e of entries) {
-        if (e.isIntersecting) {
-          inView.value = true
-          tryLoad()
-          observer?.disconnect()
-        }
-      }
-    },
-    { rootMargin: '300px' },
-  )
-  observer.observe(container.value)
-})
-
-onUnmounted(() => {
-  observer?.disconnect()
-})
 </script>
 
 <template>
-  <div ref="container" class="w-full">
+  <div class="w-full">
     <!-- 加载占位 -->
     <div
       v-if="!loaded && !error"
