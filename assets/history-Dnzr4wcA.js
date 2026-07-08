@@ -1,0 +1,1 @@
+import{j as a}from"./index-Cpz2vYDT.js";async function s(t){return a.history.get(t)}async function n(t){await a.history.put({...t,updated_at:Date.now()})}async function u(t){const e=await a.history.where("comic_id").equals(t).toArray();if(e.length!==0)return e.reduce((r,o)=>o.updated_at>r.updated_at?o:r)}export{s as a,u as g,n as s};

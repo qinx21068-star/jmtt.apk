@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/jmtt.apk/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#1a1625" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="本子天国" />
+    <meta name="description" content="本子天国 PWA - iOS 友好的漫画阅读器" />
+    <title>本子天国</title>
+    <script>
+      // ============================================================================
+      // 早期清理脚本（在 Vue 加载前执行）
+      // ============================================================================
+      // 解决两个历史问题：
+      // 1. 旧 Service Worker 缓存旧代码 → 注销所有 SW + 清所有 caches
+      // 2. localStorage 里存了错误的 Worker URL → 清掉，强制用默认 URL
+      //    （清 SW 不清 localStorage，用户之前保存的错误 URL 会一直残留，
+      //     导致请求落到 Pages 返回 HTML → "响应解析失败: <!DOCTYPE html>"）
+      (function () {
+        try {
+          // 注销所有 Service Worker
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function (regs) {
+              regs.forEach(function (r) { r.unregister() })
+            })
+          }
+          // 清所有 caches
+          if ('caches' in window) {
+            caches.keys().then(function (keys) {
+              keys.forEach(function (k) { caches.delete(k) })
+            })
+          }
+          // 清掉 localStorage 里可能导致问题的 Worker URL（保留主题、免责声明等）
+          var savedUrl = localStorage.getItem('jmtt-worker-url')
+          var defaultUrl = 'https://jmtt-proxy.qinx21068.workers.dev'
+          if (savedUrl && savedUrl !== defaultUrl) {
+            console.log('[early-cleanup] 清除错误的 Worker URL:', savedUrl)
+            localStorage.removeItem('jmtt-worker-url')
+          }
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/jmtt.apk/assets/index-Cpz2vYDT.js"></script>
+    <link rel="stylesheet" crossorigin href="/jmtt.apk/assets/index-CZYdLxf7.css">
+  <link rel="manifest" href="/jmtt.apk/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/jmtt.apk/registerSW.js"></script></head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

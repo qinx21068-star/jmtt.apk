@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PWA 诊断（独立版）</title>
+  <style>
+    body { background: #0a0a0a; color: #e5e5e5; font-family: -apple-system, sans-serif; padding: 16px; margin: 0; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .step { border-radius: 8px; padding: 12px; margin-bottom: 12px; background: #1a1a1a; border: 1px solid #6b7280; }
+    .step.ok { border-color: #10b981; }
+    .step.fail { border-color: #ef4444; }
+    .step.info { border-color: #3b82f6; }
+    .step.pending { border-color: #6b7280; }
+    .step .name { font-weight: bold; margin-bottom: 4px; }
+    .step .detail { color: #a3a3a3; font-size: 13px; word-break: break-all; }
+    .step pre { background: #0d0d0d; padding: 8px; border-radius: 4px; font-size: 11px; overflow-x: auto; margin: 8px 0 0; color: #d4d4d4; }
+    .hint { color: #6b7280; font-size: 12px; margin-bottom: 16px; }
+    img { max-width: 100%; max-height: 400px; object-fit: contain; background: #000; border-radius: 8px; display: block; margin-top: 8px; }
+    h2 { font-size: 14px; margin: 24px 0 8px; }
+  </style>
+</head>
+<body>
+  <h1>PWA 诊断（独立版）</h1>
+  <p class="hint">这个页面完全脱离 Vue/路由，直接调用 Worker API。如果你看到这段文字，说明 HTML 已加载。</p>
+  <div id="steps"></div>
+  <div id="images"></div>
+
+  <script>
+    // ============ 纯 JS MD5 实现 ============
+    var MD5_S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+    var MD5_K = [0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391];
+    function safeAdd(x,y){var lsw=(x&0xffff)+(y&0xffff);var msw=(x>>16)+(y>>16)+(lsw>>16);return(msw<<16)|(lsw&0xffff);}
+    function bitRol(n,c){return(n<<c)|(n>>>(32-c));}
+    function md5cmn(q,a,b,x,s,t){return safeAdd(bitRol(safeAdd(safeAdd(a,q),safeAdd(x,t)),s),b);}
+    function md5ff(a,b,c,d,x,s,t){return md5cmn((b&c)|(~b&d),a,b,x,s,t);}
+    function md5gg(a,b,c,d,x,s,t){return md5cmn((b&d)|(c&~d),a,b,x,s,t);}
+    function md5hh(a,b,c,d,x,s,t){return md5cmn(b^c^d,a,b,x,s,t);}
+    function md5ii(a,b,c,d,x,s,t){return md5cmn(c^(b|~d),a,b,x,s,t);}
+    function md5cycle(x,k){var a=x[0],b=x[1],c=x[2],d=x[3];
+      a=md5ff(a,b,c,d,k[0],MD5_S[0],MD5_K[0]);d=md5ff(d,a,b,c,k[1],MD5_S[1],MD5_K[1]);c=md5ff(c,d,a,b,k[2],MD5_S[2],MD5_K[2]);b=md5ff(b,c,d,a,k[3],MD5_S[3],MD5_K[3]);
+      a=md5ff(a,b,c,d,k[4],MD5_S[4],MD5_K[4]);d=md5ff(d,a,b,c,k[5],MD5_S[5],MD5_K[5]);c=md5ff(c,d,a,b,k[6],MD5_S[6],MD5_K[6]);b=md5ff(b,c,d,a,k[7],MD5_S[7],MD5_K[7]);
+      a=md5ff(a,b,c,d,k[8],MD5_S[8],MD5_K[8]);d=md5ff(d,a,b,c,k[9],MD5_S[9],MD5_K[9]);c=md5ff(c,d,a,b,k[10],MD5_S[10],MD5_K[10]);b=md5ff(b,c,d,a,k[11],MD5_S[11],MD5_K[11]);
+      a=md5ff(a,b,c,d,k[12],MD5_S[12],MD5_K[12]);d=md5ff(d,a,b,c,k[13],MD5_S[13],MD5_K[13]);c=md5ff(c,d,a,b,k[14],MD5_S[14],MD5_K[14]);b=md5ff(b,c,d,a,k[15],MD5_S[15],MD5_K[15]);
+      a=md5gg(a,b,c,d,k[1],MD5_S[16],MD5_K[16]);d=md5gg(d,a,b,c,k[6],MD5_S[17],MD5_K[17]);c=md5gg(c,d,a,b,k[11],MD5_S[18],MD5_K[18]);b=md5gg(b,c,d,a,k[0],MD5_S[19],MD5_K[19]);
+      a=md5gg(a,b,c,d,k[5],MD5_S[20],MD5_K[20]);d=md5gg(d,a,b,c,k[10],MD5_S[21],MD5_K[21]);c=md5gg(c,d,a,b,k[15],MD5_S[22],MD5_K[22]);b=md5gg(b,c,d,a,k[4],MD5_S[23],MD5_K[23]);
+      a=md5gg(a,b,c,d,k[9],MD5_S[24],MD5_K[24]);d=md5gg(d,a,b,c,k[14],MD5_S[25],MD5_K[25]);c=md5gg(c,d,a,b,k[3],MD5_S[26],MD5_K[26]);b=md5gg(b,c,d,a,k[8],MD5_S[27],MD5_K[27]);
+      a=md5gg(a,b,c,d,k[13],MD5_S[28],MD5_K[28]);d=md5gg(d,a,b,c,k[2],MD5_S[29],MD5_K[29]);c=md5gg(c,d,a,b,k[7],MD5_S[30],MD5_K[30]);b=md5gg(b,c,d,a,k[12],MD5_S[31],MD5_K[31]);
+      a=md5hh(a,b,c,d,k[5],MD5_S[32],MD5_K[32]);d=md5hh(d,a,b,c,k[8],MD5_S[33],MD5_K[33]);c=md5hh(c,d,a,b,k[11],MD5_S[34],MD5_K[34]);b=md5hh(b,c,d,a,k[14],MD5_S[35],MD5_K[35]);
+      a=md5hh(a,b,c,d,k[1],MD5_S[36],MD5_K[36]);d=md5hh(d,a,b,c,k[4],MD5_S[37],MD5_K[37]);c=md5hh(c,d,a,b,k[7],MD5_S[38],MD5_K[38]);b=md5hh(b,c,d,a,k[10],MD5_S[39],MD5_K[39]);
+      a=md5hh(a,b,c,d,k[13],MD5_S[40],MD5_K[40]);d=md5hh(d,a,b,c,k[0],MD5_S[41],MD5_K[41]);c=md5hh(c,d,a,b,k[3],MD5_S[42],MD5_K[42]);b=md5hh(b,c,d,a,k[6],MD5_S[43],MD5_K[43]);
+      a=md5hh(a,b,c,d,k[9],MD5_S[44],MD5_K[44]);d=md5hh(d,a,b,c,k[12],MD5_S[45],MD5_K[45]);c=md5hh(c,d,a,b,k[15],MD5_S[46],MD5_K[46]);b=md5hh(b,c,d,a,k[2],MD5_S[47],MD5_K[47]);
+      a=md5ii(a,b,c,d,k[0],MD5_S[48],MD5_K[48]);d=md5ii(d,a,b,c,k[7],MD5_S[49],MD5_K[49]);c=md5ii(c,d,a,b,k[14],MD5_S[50],MD5_K[50]);b=md5ii(b,c,d,a,k[5],MD5_S[51],MD5_K[51]);
+      a=md5ii(a,b,c,d,k[12],MD5_S[52],MD5_K[52]);d=md5ii(d,a,b,c,k[3],MD5_S[53],MD5_K[53]);c=md5ii(c,d,a,b,k[10],MD5_S[54],MD5_K[54]);b=md5ii(b,c,d,a,k[1],MD5_S[55],MD5_K[55]);
+      a=md5ii(a,b,c,d,k[8],MD5_S[56],MD5_K[56]);d=md5ii(d,a,b,c,k[15],MD5_S[57],MD5_K[57]);c=md5ii(c,d,a,b,k[6],MD5_S[58],MD5_K[58]);b=md5ii(b,c,d,a,k[13],MD5_S[59],MD5_K[59]);
+      a=md5ii(a,b,c,d,k[4],MD5_S[60],MD5_K[60]);d=md5ii(d,a,b,c,k[11],MD5_S[61],MD5_K[61]);c=md5ii(c,d,a,b,k[2],MD5_S[62],MD5_K[62]);b=md5ii(b,c,d,a,k[9],MD5_S[63],MD5_K[63]);
+      x[0]=safeAdd(a,x[0]);x[1]=safeAdd(b,x[1]);x[2]=safeAdd(c,x[2]);x[3]=safeAdd(d,x[3]);
+    }
+    function md5blk(data){var blks=new Int32Array(16);for(var i=0;i<64;i+=4){blks[i>>2]=data[i]|(data[i+1]<<8)|(data[i+2]<<16)|(data[i+3]<<24);}return blks;}
+    function rstrMD5(data){var n=data.length;var padded=new Uint8Array(((n+72)>>6)<<6);padded.set(data);padded[n]=0x80;var bitLen=n*8;var lo=bitLen>>>0;var hi=Math.floor(bitLen/0x100000000)>>>0;var lenPos=padded.length-8;padded[lenPos]=lo&0xff;padded[lenPos+1]=(lo>>>8)&0xff;padded[lenPos+2]=(lo>>>16)&0xff;padded[lenPos+3]=(lo>>>24)&0xff;padded[lenPos+4]=hi&0xff;padded[lenPos+5]=(hi>>>8)&0xff;padded[lenPos+6]=(hi>>>16)&0xff;padded[lenPos+7]=(hi>>>24)&0xff;var state=new Int32Array([0x67452301,0xefcdab89,0x98badcfe,0x10325476]);for(var i=0;i<padded.length;i+=64){md5cycle(state,md5blk(padded.subarray(i,i+64)));}var out=new Uint8Array(16);var dv=new DataView(out.buffer);for(var i=0;i<4;i++){dv.setInt32(i*4,state[i],true);}return out;}
+    function bytesToHex(bytes){var hex='0123456789abcdef';var s='';for(var i=0;i<bytes.length;i++){s+=hex[(bytes[i]>>4)&0x0f]+hex[bytes[i]&0x0f];}return s;}
+    function md5hex(input){return bytesToHex(rstrMD5(new TextEncoder().encode(input)));}
+
+    // ============ scramble 算法 ============
+    var SCRAMBLE_268850 = 268850;
+    var SCRAMBLE_421926 = 421926;
+    function getScrambleNum(scrambleId, aid, filename){
+      if (aid < scrambleId) return 0;
+      if (aid < SCRAMBLE_268850) return 10;
+      var x = aid < SCRAMBLE_421926 ? 10 : 8;
+      var s = md5hex(aid + '' + filename);
+      var last = s.charCodeAt(s.length - 1);
+      return (last % x) * 2 + 2;
+    }
+
+    // ============ Worker URL ============
+    var DEFAULT_WORKER_URL = 'https://jmtt-proxy.qinx21068.workers.dev';
+    function getWorkerUrl(){ return localStorage.getItem('jmtt-worker-url') || DEFAULT_WORKER_URL; }
+    function buildUrl(path, params){
+      var base = getWorkerUrl();
+      var url = new URL(path, base + '/');
+      if (params) for (var k in params) if (params[k] !== undefined && params[k] !== null && params[k] !== '') url.searchParams.set(k, params[k]);
+      return url.toString();
+    }
+
+    // ============ UI 辅助 ============
+    var stepsDiv = document.getElementById('steps');
+    var imagesDiv = document.getElementById('images');
+    function addStep(name){
+      var div = document.createElement('div');
+      div.className = 'step pending';
+      div.innerHTML = '<div class="name">⏳ ' + name + '</div><div class="detail"></div><pre style="display:none"></pre>';
+      stepsDiv.appendChild(div);
+      return { el: div, name: name };
+    }
+    function update(s, status, detail, data){
+      var icon = status === 'ok' ? '✓' : status === 'fail' ? '✗' : status === 'info' ? 'ℹ' : '⏳';
+      s.el.className = 'step ' + status;
+      s.el.querySelector('.name').textContent = icon + ' ' + s.name;
+      s.el.querySelector('.detail').textContent = detail;
+      if (data !== undefined){
+        var pre = s.el.querySelector('pre');
+        pre.style.display = 'block';
+        pre.textContent = JSON.stringify(data, null, 2);
+      }
+    }
+
+    async function run(){
+      var s0 = addStep('0. 脚本启动');
+      update(s0, 'ok', 'JS 已执行，开始诊断');
+
+      try {
+        // 1. Worker URL
+        var s1 = addStep('1. Worker URL');
+        var workerUrl = getWorkerUrl();
+        update(s1, 'info', '当前 Worker: ' + workerUrl);
+
+        // 2. Health
+        var s2 = addStep('2. Worker 健康检查 /api/health');
+        var resp = await fetch(buildUrl('/api/health'), { headers: { Accept: 'application/json' } });
+        var text = await resp.text();
+        if (text.trimStart().startsWith('<') || text.indexOf('<!DOCTYPE') >= 0){
+          update(s2, 'fail', '返回了 HTML 而非 JSON！前 200 字: ' + text.slice(0, 200));
+          return;
+        }
+        var health = JSON.parse(text);
+        if (health.code !== 200 || !health.data){
+          update(s2, 'fail', 'code=' + health.code + ', msg=' + health.errorMsg);
+          return;
+        }
+        update(s2, 'ok', 'status=' + health.data.status + ', time=' + health.data.time + 'ms', health.data);
+
+        // 3. 搜索
+        var s3 = addStep('3. 搜索测试 (关键词: 線画)');
+        resp = await fetch(buildUrl('/api/search', { q: '線画', page: '1', order: 'latest', time: 'all' }));
+        text = await resp.text();
+        if (text.trimStart().startsWith('<')){
+          update(s3, 'fail', '返回 HTML: ' + text.slice(0, 200));
+          return;
+        }
+        var searchResult = JSON.parse(text);
+        if (searchResult.code !== 200 || !searchResult.data){
+          update(s3, 'fail', 'code=' + searchResult.code + ', msg=' + searchResult.errorMsg);
+          return;
+        }
+        var items = searchResult.data.items || [];
+        update(s3, items.length > 0 ? 'ok' : 'fail', '返回 ' + items.length + ' 条结果, total=' + searchResult.data.total, items.slice(0, 2));
+        if (items.length === 0) return;
+        var firstComicId = items[0].id;
+
+        // 4. 详情
+        var s4 = addStep('4. 漫画详情 /api/comic/' + firstComicId);
+        resp = await fetch(buildUrl('/api/comic/' + firstComicId));
+        text = await resp.text();
+        var detail = JSON.parse(text);
+        if (detail.code !== 200 || !detail.data){
+          update(s4, 'fail', 'code=' + detail.code + ', msg=' + detail.errorMsg);
+          return;
+        }
+        var d = detail.data;
+        update(s4, 'ok', 'name="' + d.name + '", 章节数=' + d.chapters.length, { name: d.name, chapters: d.chapters.length, cover: d.cover ? d.cover.slice(0, 80) : null });
+        if (d.chapters.length === 0){ update(s4, 'fail', '没有章节'); return; }
+        var firstChapterId = d.chapters[0].id;
+
+        // 5. 章节图片列表（关键！）
+        var s5 = addStep('5. 章节图片列表 /api/chapter/' + firstChapterId);
+        resp = await fetch(buildUrl('/api/chapter/' + firstChapterId));
+        text = await resp.text();
+        var chapter = JSON.parse(text);
+        if (chapter.code !== 200 || !chapter.data){
+          update(s5, 'fail', 'code=' + chapter.code + ', msg=' + chapter.errorMsg);
+          return;
+        }
+        var ch = chapter.data;
+        var images = ch.images || [];
+        var firstImage = images[0] || '';
+        // 解析 scramble 参数
+        var parsed = null;
+        try {
+          var u = new URL(firstImage, window.location.origin);
+          if (u.pathname.indexOf('/api/image-proxy') >= 0 || u.pathname.endsWith('/api/image-proxy')){
+            parsed = {
+              targetUrl: u.searchParams.get('url') || '',
+              aid: parseInt(u.searchParams.get('aid') || '0', 10) || 0,
+              scrambleId: parseInt(u.searchParams.get('scramble_id') || '0', 10) || 0,
+              filename: u.searchParams.get('filename') || ''
+            };
+          }
+        } catch(e){}
+        update(s5, images.length > 0 ? 'ok' : 'fail',
+          'scramble_id=' + ch.scramble_id + ', 图片数=' + images.length,
+          { scramble_id: ch.scramble_id, images_count: images.length, first_image_url: firstImage.slice(0, 120), parsed: parsed });
+        if (images.length === 0){
+          update(s5, 'fail', '⚠️ 图片列表为空！这就是阅读器黑屏的根因——Worker 返回的章节没有图片数据');
+          return;
+        }
+
+        // 6. 直接加载第一张图片
+        var s6 = addStep('6. 直接加载第一张图片（原图，未解码）');
+        try {
+          var imgResp = await fetch(firstImage);
+          var ct = imgResp.headers.get('Content-Type') || '';
+          var blob = await imgResp.blob();
+          update(s6, imgResp.ok && ct.indexOf('image/') === 0 ? 'ok' : 'fail',
+            'HTTP ' + imgResp.status + ', Content-Type=' + ct + ', 大小=' + blob.size + ' 字节');
+          if (imgResp.ok && ct.indexOf('image/') === 0){
+            // 显示原图
+            var h2a = document.createElement('h2'); h2a.textContent = '第一张原图（未解码，应该是乱的切片）';
+            var imgA = document.createElement('img'); imgA.src = URL.createObjectURL(blob);
+            imagesDiv.appendChild(h2a); imagesDiv.appendChild(imgA);
+          }
+        } catch(e){
+          update(s6, 'fail', '请求失败: ' + e.message);
+        }
+
+        // 7. scramble 解码
+        var s7 = addStep('7. scramble 解码测试');
+        if (!parsed || !parsed.aid || !parsed.scrambleId || !parsed.filename){
+          update(s7, 'fail', '图片 URL 缺少 scramble 参数');
+          return;
+        }
+        var num = getScrambleNum(parsed.scrambleId, parsed.aid, parsed.filename);
+        update(s7, 'info', 'aid=' + parsed.aid + ', scramble_id=' + parsed.scrambleId + ', filename=' + parsed.filename + ', num=' + num + '，开始解码…');
+        try {
+          if (num === 0){
+            update(s7, 'ok', 'num=0，无需解码');
+            return;
+          }
+          var decResp = await fetch(firstImage);
+          var decBlob = await decResp.blob();
+          var img = new Image();
+          var objectUrl = URL.createObjectURL(decBlob);
+          await new Promise(function(resolve, reject){
+            img.onload = function(){ resolve(); };
+            img.onerror = function(){ reject(new Error('图片解码失败')); };
+            img.src = objectUrl;
+          });
+          var w = img.naturalWidth, h = img.naturalHeight;
+          var canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          var ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+          var over = h % num, moveBase = Math.floor(h / num);
+          for (var i = 0; i < num; i++){
+            var move = moveBase, ySrc = h - move * (i + 1) - over, yDst = move * i;
+            if (i === 0) move += over; else yDst += over;
+            ctx.drawImage(img, 0, ySrc, w, move, 0, yDst, w, move);
+          }
+          URL.revokeObjectURL(objectUrl);
+          var outBlob = await new Promise(function(resolve){ canvas.toBlob(resolve, 'image/jpeg', 0.92); });
+          var outUrl = URL.createObjectURL(outBlob);
+          update(s7, 'ok', '解码成功！num=' + num + ', 原图 ' + w + 'x' + h);
+          var h2b = document.createElement('h2'); h2b.textContent = '解码后图片（应该是正常顺序的漫画页）';
+          var imgB = document.createElement('img'); imgB.src = outUrl;
+          imagesDiv.appendChild(h2b); imagesDiv.appendChild(imgB);
+        } catch(e){
+          update(s7, 'fail', '解码异常: ' + e.message);
+        }
+      } catch(e){
+        var sErr = addStep('❌ 诊断脚本异常');
+        update(sErr, 'fail', e.message + '\n' + (e.stack || ''));
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>
