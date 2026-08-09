@@ -15,7 +15,7 @@ converterMoshi = "2.11.0"
 datastore = "1.1.1"
 coroutines = "1.9.0"
 splashscreen = "1.0.1"
-jsoup = "1.18.3"
+jsoup = "1.23.1"
 biometric = "1.1.0"
 lifecycleProcess = "2.8.7"
 
