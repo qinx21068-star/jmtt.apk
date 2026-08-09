@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 
 /**
@@ -19,10 +20,21 @@ private val Context.searchHistoryStore by preferencesDataStore(name = "search_hi
 class SearchHistoryStore(private val context: Context) {
     private val orderedKey = stringPreferencesKey("ordered_terms")
 
-    /** 所有历史搜索词（按最近使用排序，最近在前，最多 20 条）。 */
-    val allTerms: Flow<List<String>> = context.searchHistoryStore.data.map { prefs ->
-        prefs[orderedKey]?.split('\n')?.filter { it.isNotBlank() } ?: emptyList()
-    }
+    /**
+     * 所有历史搜索词（按最近使用排序，最近在前，最多 20 条）。
+     *
+     * v27.5 稳定性加固：DataStore 读盘可能抛 IOException（磁盘满/权限丢失/文件损坏），
+     * 未捕获会让 collect 整个 flow 的协程崩溃 → SearchScreen 重组时 NPE。
+     * 用 .catch 兜底，失败时 emit 空列表，让 UI 显示"暂无搜索历史"而非崩溃。
+     */
+    val allTerms: Flow<List<String>> = context.searchHistoryStore.data
+        .map { prefs ->
+            prefs[orderedKey]?.split('\n')?.filter { it.isNotBlank() } ?: emptyList()
+        }
+        .catch { e ->
+            com.jmreader.core.Logger.w("SearchHistory", "读取搜索历史失败: ${com.jmreader.core.Logger.brief(e)}")
+            emit(emptyList())
+        }
 
     /** 添加搜索词（去重，提到最前，超过 20 条截断旧的）。 */
     suspend fun add(term: String) {

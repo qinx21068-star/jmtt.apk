@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- v27.5 稳定性加固 / UX：深色模式下 splash 背景与系统深色主题一致，
+         避免浅色 splash 闪一下再切到深色主界面造成的视觉刺眼。
+         与浅色模式的 splash_bg 对应，由系统在 -night 配置下自动选用。 -->
+    <color name="splash_bg">#101418</color>
+</resources>

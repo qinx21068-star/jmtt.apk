@@ -63,8 +63,11 @@ fun DisclaimerDialog(
 
     AlertDialog(
         onDismissRequest = {
-            // 首次启动倒计时未结束不允许点外部关闭，避免用户误触跳过阅读
-            if (remaining == 0) onDismiss()
+            // 关键修复：forceCountdown 场景下完全禁止点外部关闭。
+            // 之前 remaining==0 后允许点外部触发 onDismiss（=finishAffinity 退出 App），
+            // 用户在 5 秒后随手点空白处就直接退出 App，无确认提示，体验极差。
+            // 退出仅通过显式"不同意，退出"按钮触发。
+            if (!forceCountdown) onDismiss()
         },
         title = { Text("免责声明", fontWeight = FontWeight.SemiBold) },
         text = {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -59,6 +60,8 @@ import com.jmreader.core.Logger
 import com.jmreader.data.AppContainer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -91,12 +94,27 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     init { reload() }
 
     /**
+     * v27.5 稳定性加固：所有用户操作都用 launchSafe 包裹，IO 异常不会让进程崩溃。
+     * DataStore 写盘、OkHttp 网络、socket 异常都可能抛 IOException，必须兜底。
+     */
+    private fun launchSafe(block: suspend () -> Unit) = viewModelScope.launch {
+        try {
+            block()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            com.jmreader.core.Logger.w("Domain", "操作失败: ${com.jmreader.core.Logger.brief(e)}")
+            _events.emit("操作失败：${e.message ?: "未知错误"}")
+        }
+    }
+
+    /**
      * 重新加载域名列表。DataStore 读取放到协程里，避免在主线程 runBlocking 造成 ANR。
      * 内置域名池读取（directClient.apiDomainList/currentDomain）是内存操作，可留在主线程。
      */
     fun reload() {
         val current = container.directClient.currentDomain()
-        viewModelScope.launch {
+        launchSafe {
             val custom = container.settingsStore.settings.first().customApiDomains
             val all = (builtin + custom).distinct()
             _items.clear()
@@ -111,9 +129,9 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** 测速单个域名。 */
-    fun testOne(host: String) = viewModelScope.launch {
+    fun testOne(host: String) = launchSafe {
         val idx = _items.indexOfFirst { it.host == host }
-        if (idx < 0) return@launch
+        if (idx < 0) return@launchSafe
         _items[idx] = _items[idx].copy(testing = true, error = null, latency = null)
         val (lat, err) = withContext(Dispatchers.IO) { container.directClient.testDomain(host) }
         val i2 = _items.indexOfFirst { it.host == host }
@@ -122,18 +140,23 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    /** 测速全部（并发，加速）。 */
-    fun testAll() = viewModelScope.launch {
+    /** 测速全部（并发，限制并发到 4 避免触发限流/耗尽 socket）。 */
+    fun testAll() = launchSafe {
         _items.indices.forEach { i -> _items[i] = _items[i].copy(testing = true, error = null, latency = null) }
         val hosts = _items.toList().map { it.host }
-        // 并发测速（每个域名一个协程）
-        val results = withContext(Dispatchers.IO) {
+        // 关键修复：用 Semaphore(4) 限制并发，避免 20+ 域名同时请求触发禁漫 CDN 限流（IP 被临时封禁），
+        // 也避免弱网下 socket 耗尽。testDomain 内部用 testClient 短超时（6s）防单域名卡 40s。
+        val sem = kotlinx.coroutines.sync.Semaphore(4)
+        val results: List<Pair<String, Pair<Long?, String?>>> = withContext(Dispatchers.IO) {
             hosts.map { host ->
-                async { host to container.directClient.testDomain(host) }
+                async {
+                    sem.withPermit { host to container.directClient.testDomain(host) }
+                }
             }.map { it.await() }
         }
         for ((host, pair) in results) {
-            val (lat, err) = pair
+            val lat = pair.first
+            val err = pair.second
             val i = _items.indexOfFirst { it.host == host }
             if (i >= 0) _items[i] = _items[i].copy(testing = false, latency = lat, error = err)
         }
@@ -142,7 +165,7 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** 选中某域名为当前使用。 */
-    fun select(host: String) = viewModelScope.launch {
+    fun select(host: String) = launchSafe {
         container.directClient.selectDomain(host)
         _items.indices.forEach { i ->
             _items[i] = _items[i].copy(isCurrent = _items[i].host == host)
@@ -151,7 +174,7 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** 添加自定义域名。 */
-    fun addCustom(host: String) = viewModelScope.launch {
+    fun addCustom(host: String) = launchSafe {
         // 规整：去掉协议前缀（大小写不敏感）和末尾斜杠
         val h = host.trim()
             .replace(Regex("(?i)^https?://"), "")
@@ -159,16 +182,16 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
             .trim()
         if (h.isBlank()) {
             _events.emit("域名不能为空")
-            return@launch
+            return@launchSafe
         }
         // 格式校验：合法的 host 只能包含字母数字、点、连字符，且至少含一个点
         if (!h.matches(Regex("^[A-Za-z0-9.-]+$")) || !h.contains('.')) {
             _events.emit("域名格式不正确：$h")
-            return@launch
+            return@launchSafe
         }
         if (_items.any { it.host.equals(h, ignoreCase = true) }) {
             _events.emit("域名已存在：$h")
-            return@launch
+            return@launchSafe
         }
         val custom = container.settingsStore.settings.first().customApiDomains + h
         container.settingsStore.setCustomApiDomains(custom)
@@ -178,7 +201,7 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** 删除自定义域名（内置不可删）。同步移除运行时域名池中的对应项。 */
-    fun removeCustom(host: String) = viewModelScope.launch {
+    fun removeCustom(host: String) = launchSafe {
         val custom = container.settingsStore.settings.first().customApiDomains - host
         container.settingsStore.setCustomApiDomains(custom)
         container.directClient.removeDomain(host)   // 同步运行时域名池，否则被删域名仍可能被选中
@@ -193,7 +216,7 @@ class DomainViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     /** 手动拉取禁漫最新域名并合并。 */
-    fun refreshFromServer() = viewModelScope.launch {
+    fun refreshFromServer() = launchSafe {
         _events.emit("正在拉取最新域名…")
         val ok = container.directClient.refreshDomains()
         if (ok) {
@@ -286,12 +309,18 @@ fun DomainManageScreen(container: AppContainer, onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            items(items, key = { it.host }) { item ->
+            itemsIndexed(items, key = { i, item -> item.host.lowercase().ifBlank { "idx_$i" } }) { _, item ->
+                // v27.5 性能修复：lambda 用 remember 缓存
+                val onTest = remember(item, vm) { { vm.testOne(item.host); Unit } }
+                val onSelect = remember(item, vm) { { vm.select(item.host); Unit } }
+                val onRemove = if (item.isCustom) {
+                    remember(item) { { deleteTarget = item } }
+                } else null
                 DomainRow(
                     item = item,
-                    onTest = { vm.testOne(item.host) },
-                    onSelect = { vm.select(item.host) },
-                    onRemove = if (item.isCustom) ({ deleteTarget = item }) else null,
+                    onTest = onTest,
+                    onSelect = onSelect,
+                    onRemove = onRemove,
                 )
             }
             item { Spacer(Modifier.height(12.dp)) }

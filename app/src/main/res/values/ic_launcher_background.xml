@@ -1,3 +1,6 @@
 <resources>
-    <color name="ic_launcher_background">#1A1A2E</color>
+    <!-- 浅蓝灰背景（蓝白风格 EFF3F6）。
+         自适应图标的 background 层；前景 PNG 不透明时会覆盖此色，
+         但保留为系统 themed icon / 圆角裁剪兜底色。 -->
+    <color name="ic_launcher_background">#EFF3F6</color>
 </resources>

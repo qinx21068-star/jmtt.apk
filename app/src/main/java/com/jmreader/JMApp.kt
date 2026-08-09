@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 
 /**
  * 应用入口，持有全局依赖容器。
@@ -30,8 +31,10 @@ class JMApp : Application(), ImageLoaderFactory {
     lateinit var container: AppContainer
         private set
 
-    /** App 级别的协程作用域，用于启动阶段的异步初始化任务。 */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** App 级别的协程作用域，用于启动阶段的异步初始化任务。
+     *  v27.5 稳定性加固：附加 CrashHandler.coroutineHandler 兜底未捕获异常，
+     *  否则任意子协程异常会让整个进程崩溃（SupervisorJob 不传播给兄弟但不会捕获异常）。 */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CrashHandler.coroutineHandler)
 
     override fun onCreate() {
         super.onCreate()
@@ -51,11 +54,20 @@ class JMApp : Application(), ImageLoaderFactory {
         // 内置域名池已含最新可用域名，未及时合并也不影响首请求。
         appScope.launch {
             runCatching {
-                val custom = container.settingsStore.settings.first().customApiDomains
+                val s = container.settingsStore.settings.first()
+                val custom = s.customApiDomains
                 if (custom.isNotEmpty()) {
                     container.directClient.mergeCustomDomains(custom.toList())
                     Logger.i("App", "已合并 ${custom.size} 个自定义 API 域名")
                 }
+                // v27.5 #37：启动时应用代理设置（用户上次配置的代理）
+                if (!s.proxy.isNullOrBlank()) {
+                    container.directClient.applyProxy(s.proxy)
+                }
+                // v27.5 #20：启动时应用下载并发数设置
+                container.downloadManager.setConcurrency(s.downloadConcurrency)
+                // v27.5 #34：启动时应用图片 CDN 锁定
+                container.directClient.setPinnedImageCdn(s.pinnedImageCdn)
             }
         }
 

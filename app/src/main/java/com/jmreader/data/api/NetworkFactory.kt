@@ -8,6 +8,8 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
@@ -28,7 +30,14 @@ object NetworkFactory {
             .build()
     }
 
-    fun build(baseUrl: String): JMApi {
+    /**
+     * 构建后端 API。
+     * @param baseUrl 后端地址
+     * @param proxyStr 代理设置（"host:port" 或 "socks5://host:port"，null=不走代理）。v27.5 #37 新增。
+     * @return [BuiltApi] 含 JMApi 与底层 OkHttpClient；切换后端时调用方应 [OkHttpClient.shutdown]
+     *   旧的 client，避免连接池/Dispatcher 线程泄漏（每次重建都泄漏一个 client 实例）。
+     */
+    fun build(baseUrl: String, proxyStr: String? = null): BuiltApi {
         val rawUrl = baseUrl.trim()
         if (rawUrl.isEmpty()) {
             Logger.w("Net", "后端地址为空，无法构建 API")
@@ -37,7 +46,7 @@ object NetworkFactory {
             Logger.w("Net", "后端地址缺少 http(s):// 前缀: $rawUrl")
         }
 
-        val client = OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
@@ -47,16 +56,74 @@ object NetworkFactory {
             .addInterceptor(HttpLoggingInterceptor().apply {
                 level = HttpLoggingInterceptor.Level.NONE // 已有自定义日志，关闭重复
             })
-            .build()
+
+        // v27.5 #37：应用代理设置
+        parseProxy(proxyStr)?.let { (proxy, type) ->
+            builder.proxy(proxy)
+            Logger.i("Net", "已应用代理: $type")
+        }
+
+        val client = builder.build()
 
         // Retrofit 要求 baseUrl 以 '/' 结尾
         val url = (rawUrl.ifEmpty { "http://localhost:8000" }).trimEnd('/') + "/"
 
-        return Retrofit.Builder()
+        val api = Retrofit.Builder()
             .baseUrl(url)
             .client(client)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(JMApi::class.java)
+        return BuiltApi(api, client)
+    }
+
+    /** [build] 的返回值，把 client 暴露出来供调用方在重建时 shutdown 旧实例。 */
+    data class BuiltApi(val api: JMApi, val client: OkHttpClient)
+
+    /**
+     * v27.5 #37：解析代理字符串。
+     * 支持：
+     * - "host:port" → HTTP 代理
+     * - "http://host:port" → HTTP 代理
+     * - "https://host:port" → HTTP 代理（HTTPS 上游）
+     * - "socks5://host:port" → SOCKS 代理
+     * 返回 (Proxy, 类型描述)；无效格式返回 null。
+     */
+    fun parseProxy(proxyStr: String?): Pair<Proxy, String>? {
+        if (proxyStr.isNullOrBlank()) return null
+        val s = proxyStr.trim()
+        return runCatching {
+            when {
+                s.startsWith("socks5://", ignoreCase = true) -> {
+                    val hp = s.substringAfter("socks5://").removeSuffix("/")
+                    val (h, p) = splitHostPort(hp) ?: return@runCatching null
+                    Proxy(Proxy.Type.SOCKS, InetSocketAddress(h, p)) to "socks5://$h:$p"
+                }
+                s.startsWith("http://", ignoreCase = true) -> {
+                    val hp = s.substringAfter("http://").removeSuffix("/")
+                    val (h, p) = splitHostPort(hp) ?: return@runCatching null
+                    Proxy(Proxy.Type.HTTP, InetSocketAddress(h, p)) to "http://$h:$p"
+                }
+                s.startsWith("https://", ignoreCase = true) -> {
+                    val hp = s.substringAfter("https://").removeSuffix("/")
+                    val (h, p) = splitHostPort(hp) ?: return@runCatching null
+                    Proxy(Proxy.Type.HTTP, InetSocketAddress(h, p)) to "https://$h:$p"
+                }
+                else -> {
+                    // 朴素 host:port → HTTP 代理
+                    val (h, p) = splitHostPort(s) ?: return@runCatching null
+                    Proxy(Proxy.Type.HTTP, InetSocketAddress(h, p)) to "http://$h:$p"
+                }
+            }
+        }.getOrNull()
+    }
+
+    private fun splitHostPort(s: String): Pair<String, Int>? {
+        val idx = s.lastIndexOf(':')
+        if (idx <= 0 || idx == s.length - 1) return null
+        val host = s.substring(0, idx)
+        val port = s.substring(idx + 1).toIntOrNull() ?: return null
+        if (port !in 1..65535) return null
+        return host to port
     }
 }

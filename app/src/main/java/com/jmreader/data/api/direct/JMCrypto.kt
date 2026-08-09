@@ -71,9 +71,24 @@ object JMCrypto {
         // 空数据兜底：服务器返回空 data 时 decrypted 可能为空，直接返回空串避免越界
         if (decrypted.isEmpty()) return ""
 
-        // 3. 移除末尾的 PKCS7 padding（最后一个字节值 = padding 长度）
+        // 3. 严格校验并移除末尾的 PKCS7 padding。
+        // 关键修复（Bug 24）：之前只看最后一个字节决定 padding 长度，不验证所有 padding 字节是否一致。
+        // 这会导致：若明文恰好以 0x01..0x10 范围的字节结尾（并非真实 padding），会被错误截断，
+        // 丢失有效数据 → JSON 解析失败 → 用户看到"解析错误"。
+        // 正确的 PKCS7 padding：末尾 N 个字节都等于 N（N ∈ 1..16，且 N <= 数据长度）。
         val padLen = decrypted[decrypted.size - 1].toInt() and 0xff
-        val end = if (padLen in 1..16 && padLen <= decrypted.size) decrypted.size - padLen else decrypted.size
+        val end = if (padLen in 1..16 && padLen <= decrypted.size) {
+            val padStart = decrypted.size - padLen
+            var valid = true
+            for (i in padStart until decrypted.size) {
+                if ((decrypted[i].toInt() and 0xff) != padLen) { valid = false; break }
+            }
+            // padding 校验通过 → 截断；不通过（疑似明文恰好以该字节结尾）→ 保留全部，
+            // 让后续 JSON 解析处理（数据未被错误截断）。
+            if (valid) padStart else decrypted.size
+        } else {
+            decrypted.size
+        }
 
         // 4. UTF-8 解码为 JSON 字符串
         return String(decrypted, 0, end, Charsets.UTF_8)

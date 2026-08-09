@@ -2,16 +2,25 @@
 
 package com.jmreader.ui.screen.search
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -24,12 +33,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +54,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.jmreader.core.Logger
 import com.jmreader.data.AppContainer
 import com.jmreader.data.dto.ComicBriefDto
 import com.jmreader.data.repository.Resource
@@ -53,7 +68,11 @@ import com.jmreader.ui.components.rememberBlockAction
 import com.jmreader.ui.nav.Routes
 import com.jmreader.ui.viewmodel.BaseListViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private data class Order(val key: String, val label: String)
@@ -101,7 +120,20 @@ class SearchViewModel(container: AppContainer) : BaseListViewModel(container) {
         query = q
         debounce?.cancel()
         viewModelScope.launch {
-            container.searchHistoryStore.add(q.trim())
+            // v27.5 稳定性加固：DataStore 读盘/写盘可能抛 IOException，未捕获会冒泡到
+            // Thread.uncaughtExceptionHandler → CrashHandler → 杀进程。整段包 try-catch，
+            // 失败仍触发 refresh，让用户至少能看到搜索结果（只是没存进历史）。
+            try {
+                // v27.5 #10 #30：仅在用户开启"记录搜索历史"且未启用隐身模式时才写历史
+                val s = container.settingsStore.settings.first()
+                if (s.saveSearchHistory && !s.incognito) {
+                    container.searchHistoryStore.add(q.trim())
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Logger.w("Search", "记录搜索历史失败: ${Logger.brief(e)}")
+            }
             refresh()
         }
     }
@@ -112,12 +144,30 @@ class SearchViewModel(container: AppContainer) : BaseListViewModel(container) {
         refresh()
     }
 
-    override suspend fun loadPage(page: Int): Resource<Pair<List<ComicBriefDto>, Int?>> =
-        when (val r = container.repository.search(query, page, order)) {
-            is Resource.Success -> Resource.Success(r.data.items to r.data.total)
+    override suspend fun loadPage(page: Int): Resource<Pair<List<ComicBriefDto>, Int?>> {
+        val r = container.repository.search(query, page, order)
+        return when (r) {
+            is Resource.Success -> {
+                // 关键修复（Bug 48）：偶尔禁漫 API 会因域名抖动/限流返回空列表（code=200 但 content=[]），
+                // 用户表现为"搜索不出结果"。首次为空且 query 非空时自动重试一次（短暂延迟后换域名再请求）。
+                // 仅首页重试：翻页返回空可能是真的没数据，不应误重试。
+                if (page == 1 && r.data.items.isEmpty() && query.isNotBlank() && r.data.total != 0) {
+                    Logger.w("Search", "首页搜索返回空，800ms 后重试一次")
+                    kotlinx.coroutines.delay(800)
+                    // reqApi 内部已会自动轮换域名重试，这里直接发第二次请求即可。
+                    when (val r2 = container.repository.search(query, page, order)) {
+                        is Resource.Success -> Resource.Success(r2.data.items to r2.data.total)
+                        is Resource.Error -> r2
+                        Resource.Loading -> Resource.Loading
+                    }
+                } else {
+                    Resource.Success(r.data.items to r.data.total)
+                }
+            }
             is Resource.Error -> r
             Resource.Loading -> Resource.Loading
         }
+    }
 }
 
 class SearchVMFactory(private val container: AppContainer) : ViewModelProvider.Factory {
@@ -135,6 +185,14 @@ fun SearchScreen(
     val vm: SearchViewModel = viewModel(factory = SearchVMFactory(container))
     val state by vm.state.collectAsState()
     val listState = rememberLazyListState()
+    // 关键修复（Bug 40）：网格模式也要外部传入 state，新搜索/换排序后才能 scrollToItem(0) 滚回顶部。
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    // v27.5 性能优化：用 cachedSnapshot 作为初始值，避免 null → 默认 → 真实 两轮重组
+    val settings by container.settingsStore.settings.collectAsState(initial = container.settingsStore.cachedSnapshot)
+    val listStyle = settings.listStyle
+    // v27.5 #11 搜索结果按 tag 筛选开关；#10 搜索历史记录开关
+    val tagFilterEnabled = settings.searchTagFilter
+    val saveHistoryEnabled = settings.saveSearchHistory
     val snackbar = remember { androidx.compose.material3.SnackbarHostState() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -144,14 +202,133 @@ fun SearchScreen(
         onResult = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
         onNavigateToDetail = { id -> navController.navigate(Routes.detail(id)) },
     )
+    // v27.5 性能修复：onClick 用 remember 缓存稳定 lambda，避免 ComicList 因 lambda 不稳定无法跳过重组
+    val onItemClick = remember(navController) {
+        { c: ComicBriefDto -> navController.navigate(Routes.detail(c.id)) }
+    }
+    val onImageSearch = remember(navController) { { navController.navigate(Routes.IMAGE_SEARCH) } }
+    val onViewLogs = remember(navController) { { navController.navigate(Routes.LOGS) } }
+    val onClearHistory = remember(scope, container) {
+        { scope.launch { container.searchHistoryStore.clear() }; Unit }
+    }
+    val onRetry = remember(vm) { { vm.refresh() } }
+    val onLoadMore = remember(vm) { { vm.loadMore() } }
+
+    // v27.5 #11 标签筛选：从当前搜索结果提取热门 tag，点击 chip 二次过滤
+    var selectedTag by remember(vm.query) { mutableStateOf<String?>(null) }
+    val availableTags = remember(state.items) {
+        state.items.flatMap { it.tags }
+            .groupingBy { it }
+            .eachCount()
+            .entries.sortedByDescending { it.value }
+            .take(15)
+            .map { it.key }
+    }
+    val visibleItems = remember(state.items, selectedTag) {
+        if (selectedTag == null) state.items
+        else state.items.filter { selectedTag in it.tags }
+    }
+
+    // v27.5 #10 热门推荐：query 为空时显示周榜 top 12
+    var hotComics by remember { mutableStateOf<List<ComicBriefDto>>(emptyList()) }
+    var hotLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        // 首次进入搜索页加载一次热门推荐（不在 query 变化时重载，避免干扰搜索）
+        if (hotComics.isEmpty()) {
+            hotLoading = true
+            try {
+                // 等设置加载完，按用户设置的排行榜周期作为"热门"维度
+                val s = container.settingsStore.settings.first()
+                val t = when (s.rankingPeriod) {
+                    com.jmreader.data.local.RankingPeriod.DAILY -> "t"
+                    com.jmreader.data.local.RankingPeriod.MONTHLY -> "m"
+                    com.jmreader.data.local.RankingPeriod.ALL -> "a"
+                    else -> "w"
+                }
+                when (val r = container.repository.ranking(time = t, category = "", page = 1)) {
+                    is Resource.Success -> {
+                        // v27.6 修复：热门推荐必须经过屏蔽 tag 过滤，否则被屏蔽的本子 100% 泄漏
+                        val (tags, names, authors) = container.blockedTagsStore.allRules.first()
+                        val rules = container.blockedTagsStore.normalizeRules(tags, names, authors)
+                        // v27.7 修复：列表 API 返回的 tags 是粗分类（混入 category），
+                        // 用粗 tags 过滤会漏判被屏蔽的具体 tag（如"NTR"被屏蔽但列表只返回"同人"）。
+                        // 有 tag 规则时拉取详情页真实 tags 再过滤，确保零泄漏。
+                        if (rules.tags.isEmpty()) {
+                            // 无 tag 规则：name/author 可立即准确判定，无需补全
+                            hotComics = r.data.items
+                                .filterNot { container.blockedTagsStore.isBlocked(it.tags, it.name, it.author, rules) }
+                                .take(12)
+                        } else {
+                            // 有 tag 规则：并发拉取详情页真实 tags（最多 20 条候选，取过滤后前 12 条）
+                            val candidates = r.data.items.take(20)
+                            val enriched = coroutineScope {
+                                candidates.map { comic ->
+                                    async {
+                                        try {
+                                            val detail = kotlinx.coroutines.withTimeoutOrNull(5000L) {
+                                                container.repository.comicDetail(comic.id)
+                                                    .let { (it as? Resource.Success)?.data }
+                                            }
+                                            val realTags = detail?.tags?.takeIf { it.isNotEmpty() } ?: comic.tags
+                                            comic.copy(tags = realTags) to
+                                                !container.blockedTagsStore.isBlocked(realTags, comic.name, comic.author, rules)
+                                        } catch (_: Throwable) {
+                                            // fail-closed：补全失败则隐藏（宁可少显示也不泄漏被屏蔽内容）
+                                            comic to false
+                                        }
+                                    }
+                                }.awaitAll()
+                            }
+                            hotComics = enriched.filter { it.second }.map { it.first }.take(12)
+                        }
+                    }
+                    else -> {}
+                }
+            } catch (_: Throwable) {}
+            finally { hotLoading = false }
+        }
+    }
 
     // 从详情页点标签进入时，initialQuery 非空 → 自动用该词搜索。
     // 用 key=initialQuery 保证只在该值变化时触发一次，避免 recomposition 重复搜索。
+    //
+    // 关键修复（Bug 39）：之前用 `vm.query.isBlank()` 作为条件，但底部 tab 导航配置
+    // popUpTo+saveState+restoreState 导致 SearchScreen 的 ViewModel 状态被保留——
+    // 用户第一次搜索后 vm.query 非空，从详情页点另一个标签进入时被跳过，新标签不触发搜索。
+    // 改为 `initialQuery != vm.query`：只要点的是不同的标签词就触发搜索。
     LaunchedEffect(initialQuery) {
-        if (!initialQuery.isNullOrBlank() && vm.query.isBlank()) {
+        if (!initialQuery.isNullOrBlank() && initialQuery != vm.query) {
             vm.searchDirect(initialQuery)
         }
     }
+
+    // Bug 8 修复：搜索结果加载完成后自动收起键盘。
+    // 之前 debounce 自动搜索（输入停顿 400ms）不收键盘，键盘遮挡底部导航栏，
+    // 用户点首页 tab 实际点到键盘上 →「无法跳转首页」。
+    //
+    // 关键修复（v26）：原条件 `!state.refreshing && state.items.isNotEmpty()` 只在
+    // "搜索完成且有结果"时收键盘。若搜索无结果/出错，键盘不收，底部 tab 仍被遮挡。
+    // 改为只要 refreshing 从 true 变 false 就收键盘（搜索完成即收，无论结果如何）。
+    LaunchedEffect(state.refreshing) {
+        if (!state.refreshing) {
+            keyboardController?.hide()
+        }
+    }
+    // 滚动列表时也收键盘：用户开始浏览结果时键盘应消失，露出底部导航栏。
+    // 用 snapshotFlow 监听 firstVisibleItemIndex 变化，任何滚动即 hide。
+    LaunchedEffect(listState) {
+        androidx.compose.runtime.snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (idx, off) -> if (idx != 0 || off != 0) keyboardController?.hide() }
+    }
+    LaunchedEffect(gridState) {
+        androidx.compose.runtime.snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
+            .collect { (idx, off) -> if (idx != 0 || off != 0) keyboardController?.hide() }
+    }
+
+    // Bug 11 修复：把 lastScrolledQuery/Order 提到 when 分支外，
+    // 避免 state 在"有结果"和"加载中"之间切换时 rememberSaveable 丢失值导致列表跳回顶部。
+    var lastScrolledQuery by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
+    var lastScrolledOrder by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
 
     // 用 Box 包裹以承载 SnackbarHost：长按屏蔽/收藏操作需要反馈
     Box(Modifier.fillMaxSize()) {
@@ -160,6 +337,7 @@ fun SearchScreen(
             value = vm.query,
             onValueChange = vm::onQueryChange,
             modifier = Modifier.fillMaxWidth().padding(12.dp),
+            singleLine = true,
             placeholder = { Text("搜索漫画 / 作者 / 本子号") },
             leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
             // 搜索栏右侧：清空按钮（输入非空时显示）+ 识图按钮
@@ -170,7 +348,7 @@ fun SearchScreen(
                             Icon(Icons.Outlined.Close, contentDescription = "清空")
                         }
                     }
-                    IconButton(onClick = { navController.navigate(Routes.IMAGE_SEARCH) }) {
+                    IconButton(onClick = onImageSearch) {
                         Icon(
                             Icons.Outlined.ImageSearch,
                             contentDescription = "以图搜图",
@@ -178,7 +356,6 @@ fun SearchScreen(
                     }
                 }
             },
-            singleLine = true,
             // 键盘回车直接搜索（绕过 400ms debounce，立即触发）
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = {
@@ -189,98 +366,175 @@ fun SearchScreen(
                 }
             }),
         )
-        // 搜索历史：输入框为空时显示，点击直接搜索，每条带叉号可逐条删除
-        if (vm.query.isBlank() && history.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "历史",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                androidx.compose.material3.TextButton(
-                    onClick = { scope.launch { container.searchHistoryStore.clear() } },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                ) { Text("清空", style = MaterialTheme.typography.labelSmall) }
+        // v27.6：历史/热门/排序chips/tag chips 作为 ComicList 的 header，随列表滚动移出视野
+        // 搜索框保持固定（用户需要随时看到搜索框）
+        val searchHeader: @androidx.compose.runtime.Composable () -> Unit = {
+            // 搜索历史：输入框为空且开启"记录搜索历史"时显示
+            if (vm.query.isBlank() && saveHistoryEnabled && history.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "历史",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    androidx.compose.material3.TextButton(
+                        onClick = onClearHistory,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                    ) { Text("清空", style = MaterialTheme.typography.labelSmall) }
+                }
+                androidx.compose.foundation.layout.FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    history.take(20).forEach { term ->
+                        androidx.compose.material3.InputChip(
+                            selected = false,
+                            onClick = { vm.searchDirect(term) },
+                            label = { Text(term, style = MaterialTheme.typography.labelSmall) },
+                            trailingIcon = {
+                                androidx.compose.material3.IconButton(
+                                    onClick = { scope.launch { container.searchHistoryStore.remove(term) } },
+                                    modifier = Modifier.size(20.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = androidx.compose.material.icons.Icons.Outlined.Close,
+                                        contentDescription = "删除",
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
             }
-            androidx.compose.foundation.layout.FlowRow(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                history.take(20).forEach { term ->
-                    // InputChip 带删除图标：点词条搜索，点叉号删除单条
-                    // 用 IconButton 包裹叉号：提供合适点击区域 + 拦截事件避免冒泡到 chip onClick
-                    androidx.compose.material3.InputChip(
-                        selected = false,
-                        onClick = { vm.searchDirect(term) },
-                        label = { Text(term, style = MaterialTheme.typography.labelSmall) },
-                        trailingIcon = {
-                            androidx.compose.material3.IconButton(
-                                onClick = { scope.launch { container.searchHistoryStore.remove(term) } },
-                                modifier = Modifier.size(20.dp),
-                            ) {
-                                Icon(
-                                    imageVector = androidx.compose.material.icons.Icons.Outlined.Close,
-                                    contentDescription = "删除",
-                                    modifier = Modifier.size(14.dp),
-                                )
+            // 热门推荐：输入框为空时显示周榜 top 12
+            if (vm.query.isBlank() && hotComics.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        text = "热门推荐",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.size(6.dp))
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        itemsIndexed(hotComics, key = { i, c -> c.id.ifBlank { "idx_$i" } }) { _, c ->
+                            val click = remember(c, navController) {
+                                { navController.navigate(Routes.detail(c.id)) }
                             }
-                        },
+                            HotComicCard(c, onClick = click)
+                        }
+                    }
+                }
+            }
+            // 排序 chips
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ORDERS.forEach { o ->
+                    FilterChip(
+                        selected = vm.order == o.key,
+                        onClick = { vm.onOrderChange(o.key) },
+                        label = { Text(o.label) },
                     )
                 }
             }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            ORDERS.forEach { o ->
-                FilterChip(
-                    selected = vm.order == o.key,
-                    onClick = { vm.onOrderChange(o.key) },
-                    label = { Text(o.label) },
-                )
+            // 标签筛选：开启开关且有搜索结果时显示 tag chips 二级过滤
+            if (tagFilterEnabled && state.items.isNotEmpty() && availableTags.isNotEmpty()) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item {
+                        FilterChip(
+                            selected = selectedTag == null,
+                            onClick = { selectedTag = null },
+                            label = { Text("全部", style = MaterialTheme.typography.labelSmall) },
+                        )
+                    }
+                    items(availableTags) { tag ->
+                        FilterChip(
+                            selected = selectedTag == tag,
+                            onClick = { selectedTag = if (selectedTag == tag) null else tag },
+                            label = { Text(tag, style = MaterialTheme.typography.labelSmall) },
+                        )
+                    }
+                }
             }
         }
         Box(Modifier.fillMaxSize()) {
+            // v27.5 稳定性加固：捕获 state 到本地 val，避免 state.error!! race condition NPE
+            val s = state
             when {
-                state.refreshing && state.items.isEmpty() -> LoadingBox()
-                state.error != null && state.items.isEmpty() ->
+                s.refreshing && s.items.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                    searchHeader()
+                    LoadingBox()
+                }
+                // 有 tag 规则且部分条目未补全 tags（持回中），显示"正在过滤…"
+                s.filtering && s.items.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                    searchHeader()
+                    LoadingBox(message = "正在按屏蔽规则过滤…")
+                }
+                s.error != null && s.items.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                    searchHeader()
                     ErrorBox(
-                        state.error!!,
-                        onRetry = { vm.refresh() },
-                        onViewLogs = { navController.navigate(Routes.LOGS) },
+                        s.error,
+                        onRetry = onRetry,
+                        onViewLogs = onViewLogs,
                     )
-                state.items.isEmpty() -> {
-                    // 区分"未搜索"（query 空）与"搜索后无结果"（query 非空但 items 空）
+                }
+                s.items.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                    searchHeader()
                     val msg = if (vm.query.isBlank()) "输入关键词开始搜索"
                     else "未找到「${vm.query}」相关结果"
                     EmptyBox(msg)
                 }
+                visibleItems.isEmpty() -> Column(Modifier.fillMaxSize()) {
+                    searchHeader()
+                    EmptyBox("「$selectedTag」标签下无匹配结果")
+                }
                 else -> {
-                    val reachEnd by remember {
-                        derivedStateOf {
-                            (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) >= state.items.size - 4
+                    // 触底加载更多已移入 ComicList 内部（基于 onLoadMore 回调），列表/网格通用。
+                    // 新搜索/换排序后结果刷新，滚回顶部。
+                    // 仅在 query 或 order 变化时才滚到顶部，从详情页返回时不滚。
+                    // lastScrolledQuery/Order 已提到 when 分支外（Bug 11 修复）。
+                    LaunchedEffect(s.items.firstOrNull()?.id) {
+                        if (!s.refreshing && s.items.isNotEmpty() &&
+                            (lastScrolledQuery != vm.query || lastScrolledOrder != vm.order)) {
+                            lastScrolledQuery = vm.query
+                            lastScrolledOrder = vm.order
+                            // 关键修复（Bug 40）：网格模式用 gridState 滚顶，列表模式用 listState。
+                            if (listStyle == com.jmreader.data.local.ListStyle.LIST) {
+                                listState.scrollToItem(0)
+                            } else {
+                                gridState.scrollToItem(0)
+                            }
                         }
                     }
-                    LaunchedEffect(reachEnd) { if (reachEnd) vm.loadMore() }
-                    // 新搜索/换排序后结果刷新，滚回顶部，避免停在旧滚动位置看不到第一条
-                    LaunchedEffect(state.items.firstOrNull()?.id, vm.order) {
-                        if (!state.refreshing) listState.scrollToItem(0)
-                    }
                     ComicList(
-                        items = state.items,
+                        // v27.5 #11：使用经 tag 筛选后的 visibleItems
+                        items = visibleItems,
                         state = listState,
-                        onClick = { navController.navigate(Routes.detail(it.id)) },
+                        gridState = gridState,
+                        onClick = onItemClick,
                         onLongClick = onLongClick,
                         contentPadding = PaddingValues(12.dp),
-                        loadingMore = state.loadingMore,
-                        endReached = state.endReached,
-                        loadError = if (state.items.isNotEmpty()) state.error else null,
-                        onRetry = { vm.loadMore() },
+                        loadingMore = s.loadingMore,
+                        endReached = s.endReached,
+                        loadError = if (s.items.isNotEmpty()) s.error else null,
+                        onRetry = onLoadMore,
+                        listStyle = listStyle,
+                        onLoadMore = onLoadMore,
+                        header = searchHeader,
+                        onScrollStateChange = vm::setScrolling,
                     )
                 }
             }
@@ -291,4 +545,38 @@ fun SearchScreen(
          modifier = Modifier.align(androidx.compose.ui.Alignment.BottomCenter),
      )
     } // end Box
+}
+
+/** v27.5 #10 热门推荐卡片：固定宽度封面 + 标题，点击跳详情页。 */
+@Composable
+private fun HotComicCard(comic: ComicBriefDto, onClick: () -> Unit) {
+    val ctx = LocalContext.current
+    Column(
+        modifier = Modifier
+            .width(96.dp)
+            .clickable(onClick = onClick),
+    ) {
+        AsyncImage(
+            model = remember(comic.cover, ctx) {
+                // v27.5 性能修复：移除 crossfade(true)，避免滑动时每个封面跑 300ms alpha 动画抢主线程
+                ImageRequest.Builder(ctx)
+                    .data(comic.cover)
+                    .build()
+            },
+            contentDescription = comic.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(0.7f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        )
+        Spacer(modifier = Modifier.size(4.dp))
+        Text(
+            comic.name,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }

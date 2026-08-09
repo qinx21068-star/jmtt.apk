@@ -1,11 +1,13 @@
 pluginManagement {
     repositories {
-        // 仅使用国内镜像：dl.google.com 在当前网络环境不可达（SYN-SENT 超时），
-        // 阿里云 google 镜像已完整代理 com.android.* / androidx.* / com.google.* 等组件。
+        // 国内镜像优先（快），google()/mavenCentral() 兜底（镜像缺包时回源）
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/central") }
         maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
@@ -14,8 +16,10 @@ dependencyResolutionManagement {
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/central") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
+        google()
+        mavenCentral()
     }
 }
 
-rootProject.name = "JMReader"
+rootProject.name = "Iris"
 include(":app")

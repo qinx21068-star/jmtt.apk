@@ -36,6 +36,7 @@ class JmImageFetcher(
     private val client: OkHttpClient,
     private val directClient: JmDirectClient,
     private val data: String,
+    private val tempDir: File,
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult? {
@@ -98,16 +99,53 @@ class JmImageFetcher(
         }
 
         // 返回 SourceResult：Coil 自动写磁盘缓存 + telephoto 子采样可用，且不在此持有 Bitmap（省内存）
-        // coil 2.7.0 的 ImageSource 工厂是包级顶层函数 ImageSource(file: okio.Path)，
-        // 需要把 java.io.File 转成 okio.Path（.toOkioPath()）。从内存字节先落临时文件再交给 Coil。
-        // deleteOnExit 让进程退出时清理，避免累积。
+        //
+        // v27.5 性能修复：去掉每次 fetch 的 cleanupOldTempFiles() 调用。
+        // 之前每张图都做：cleanupOldTempFiles() → tempDir.listFiles 遍历整个临时目录
+        // （1 小时累积 200+ 临时文件），每次遍历 5-50ms。
+        // 阅读器翻一章 30-50 张图 = 30-50 次 listFiles 遍历，弱网/慢存储累计卡顿。
+        // 现在用 AtomicInteger 计数，每 50 次 fetch 才清理一次，平时直接跳过。
+        //
+        // v27.5 稳定性加固（critical 修复）：tempFileCounter 之前是 JmImageFetcher 实例字段，
+        // 而 Factory 每次 fetch 都 new 一个 JmImageFetcher → 计数器每次都从 0 开始 →
+        // `1 % 50 != 0` → cleanupOldTempFiles 永远不被调用 → 临时文件无限累积撑爆存储。
+        // 现在改为 companion object（Factory 单例创建的 Fetcher 共享同一计数器），每 50 次 fetch 真正清理一次。
+        sharedTempFileCounter.incrementAndGet()
+        if (sharedTempFileCounter.get() % 20 == 0) {
+            cleanupOldTempFiles(tempDir)
+        }
         val ext = if (mimeType == "image/gif") ".gif" else if (mimeType == "image/webp") ".webp" else ".jpg"
-        val tempFile = File.createTempFile("jm_img_", ext).apply { writeBytes(decoded); deleteOnExit() }
+        // v27.5 稳定性加固：磁盘满/权限丢失/临时目录不存在时 createTempFile/writeBytes 会抛 IOException。
+        // 让异常向上抛给 Coil，Coil 会转成 ErrorResult 并触发订阅方 onError，不会让进程崩溃。
+        // 原计划用 okio.Buffer() 内存回退，但 coil 2.7.0 的 ImageSource(BufferedSource) 构造器
+        // 与 R8 full mode 下访问限制不兼容（编译期即报 protected constructor 错误），故移除回退。
+        // v27.5 稳定性加固：writeBytes 失败时清理已创建的空 tempFile，避免孤儿文件累积。
+        val tempFile = File.createTempFile("jm_img_", ext, tempDir)
+        try {
+            tempFile.writeBytes(decoded)
+        } catch (e: Throwable) {
+            runCatching { tempFile.delete() }
+            throw e
+        }
         return SourceResult(
             source = ImageSource(tempFile.toOkioPath()),
             mimeType = mimeType,
             dataSource = DataSource.NETWORK,
         )
+    }
+
+    /** v27.5 稳定性加固：全局共享计数器，放在 companion object 保证 Factory 单例下所有 Fetcher 共用。 */
+    companion object {
+        private val sharedTempFileCounter = java.util.concurrent.atomic.AtomicInteger(0)
+    }
+
+    /** v27.13：清理 5 分钟前的旧临时文件（原 1 小时太长，连续阅读会累积数百文件）。 */
+    private fun cleanupOldTempFiles(dir: File) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - 300_000L
+            dir.listFiles { f -> f.name.startsWith("jm_img_") && f.lastModified() < cutoff }
+                ?.forEach { it.delete() }
+        }
     }
 
     /**
@@ -135,8 +173,9 @@ class JmImageFetcher(
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
                     val b = resp.body?.bytes() ?: throw RuntimeException("图片响应为空")
-                    // 成功：若不是当前域名，把全局当前域名切到这个可用的
-                    if (host != currentHost) directClient.rotateImageDomain()
+                    // 成功：若不是当前域名，精确切到这个可用的 host
+                    // v27.6 修复：原 rotateImageDomain() 只 index+1 取模，不保证切到成功的 host
+                    if (host != currentHost) directClient.selectImageDomain(host)
                     return b
                 }
             } catch (e: Throwable) {
@@ -171,6 +210,7 @@ class JmImageFetcher(
     class Factory(
         private val client: OkHttpClient,
         private val directClient: JmDirectClient,
+        private val tempDir: File,
     ) : Fetcher.Factory<Uri> {
         override fun create(data: Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
             // 只接管带 jm_sid 的 http(s) URL。
@@ -180,7 +220,7 @@ class JmImageFetcher(
             // 导致禁漫图片走默认 HttpUriFetcher（未解密）→ 图片错位。
             val url = data.toString()
             if (url.startsWith("http") && url.contains("jm_sid=")) {
-                return JmImageFetcher(client, directClient, url)
+                return JmImageFetcher(client, directClient, url, tempDir)
             }
             return null
         }

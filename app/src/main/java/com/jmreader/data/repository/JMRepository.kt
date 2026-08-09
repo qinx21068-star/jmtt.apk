@@ -4,6 +4,7 @@ import com.jmreader.data.AppContainer
 import com.jmreader.data.dto.ChapterImagesDto
 import com.jmreader.data.dto.ComicBriefDto
 import com.jmreader.data.dto.ComicDetailDto
+import com.jmreader.data.dto.JmCommentPageDto
 import com.jmreader.data.dto.LoginRequest
 import com.jmreader.data.dto.PageResultDto
 import com.squareup.moshi.Moshi
@@ -105,6 +106,32 @@ class JMRepository(private val container: AppContainer) {
         }
     }
 
+    /**
+     * 随机推荐：禁漫无原生 /random 端点，这里通过随机 page + 随机分类实现"换一批"体验。
+     *
+     * 策略：
+     * - 时间范围固定 "a"（全部）：扩大候选池
+     * - 分类从热门分类里随机选（含 "全部"）：增加多样性
+     * - 排序固定 "mr"（最新）：保证有内容（按观看排序时深页可能为空）
+     * - page 在 1..30 内随机：禁漫每个分类大概有几十页内容，深页可能为空
+     *
+     * 失败时由调用方重试一次（[RandomListViewModel.loadPage] 已处理）。
+     */
+    suspend fun randomComics(): Resource<PageResultDto> = io {
+        val categories = listOf("", "doujin", "single", "short", "hanman", "meiman", "doujin_cosplay", "3D", "another")
+        val category = categories.random()
+        val page = (1..30).random()
+        if (container.useBackend()) {
+            container.ensureApi().latest(page, category).toResource()
+        } else {
+            runCatching {
+                container.directClient.categoriesFilter(
+                    page = page, time = "a", category = category, order = "mr",
+                )
+            }.toResource("随机推荐加载失败")
+        }
+    }
+
     suspend fun comicDetail(id: String): Resource<ComicDetailDto> = io {
         if (container.useBackend()) {
             container.ensureApi().comicDetail(id).toResource()
@@ -120,6 +147,37 @@ class JMRepository(private val container: AppContainer) {
         } else {
             runCatching { container.directClient.chapterImages(id) }
                 .toResource("加载章节图片失败")
+        }
+    }
+
+    /**
+     * 评论/讨论区（/forum JSON API，v27.9）。
+     *
+     * - 评论区：mode="manhua", aid=本子ID, uid=null → 该本子的评论列表
+     * - 讨论区：mode="manhua", aid=null, uid=null → 全局评论流（所有本子的最新评论）
+     * - 个人评论：mode="manhua", aid=null, uid=用户ID → 该用户的评论
+     *
+     * 直连模式调 [JmDirectClient.forum]（走 reqApi 通道，稳定）。
+     * 后端模式暂未实现 forum 端点，明确报错而非假成功。
+     */
+    suspend fun forum(
+        mode: String? = "manhua",
+        aid: String? = null,
+        uid: String? = null,
+        page: Int = 1,
+    ): Resource<JmCommentPageDto> = io {
+        if (container.useBackend()) {
+            Resource.Error("后端模式暂不支持评论/讨论区，请切换为直连模式")
+        } else {
+            // v27.13：处理 SessionExpiredException，风控 401 时清本地登录态
+            try {
+                Resource.Success(container.directClient.forum(mode, aid, uid, page))
+            } catch (e: com.jmreader.data.api.direct.SessionExpiredException) {
+                container.directClient.clearSession()
+                Resource.Error("登录已过期，请重新登录")
+            } catch (e: Throwable) {
+                Resource.Error("加载评论失败：${com.jmreader.core.Logger.friendlyError(com.jmreader.core.Logger.brief(e))}")
+            }
         }
     }
 
@@ -146,9 +204,14 @@ class JMRepository(private val container: AppContainer) {
     suspend fun logout(): Resource<Boolean> = io {
         if (container.useBackend()) {
             val r = container.ensureApi().logout().toResource()
-            container.settingsStore.setLoggedInUser(null)
+            // 关键修复（Bug 43）：之前无条件 setLoggedInUser(null)，即使后端 logout 接口失败也清本地。
+            // 弱网下点退出 → 看到已退出 → 实际服务端 session 没清 → 下次登录可能命中旧 session 的过期 cookie。
+            // 现在仅在成功时才清本地登录态，失败时返回错误让用户重试。
             when (r) {
-                is Resource.Success -> Resource.Success(true)
+                is Resource.Success -> {
+                    container.settingsStore.setLoggedInUser(null)
+                    Resource.Success(true)
+                }
                 is Resource.Error -> r
                 Resource.Loading -> Resource.Loading
             }
@@ -164,8 +227,22 @@ class JMRepository(private val container: AppContainer) {
         if (container.useBackend()) {
             container.ensureApi().favorites(page).toResource()
         } else {
-            runCatching { container.directClient.favorites(page) }
-                .toResource("加载收藏失败")
+            // 关键修复：用 SessionExpiredException 类型判断，不再用 contains("401") 字符串匹配。
+            // 禁漫鉴权失败有两种形式：HTTP 401（错误信息含"401"）和 HTTP 200 + code=401
+            // （错误信息是"禁漫返回错误: 未登录"，不含"401"）。字符串匹配漏判后者，
+            // 用户会话过期时看到误导性的"所有域名均请求失败"而非引导重新登录。
+            try {
+                val data = container.directClient.favorites(page)
+                Resource.Success(data)
+            } catch (e: com.jmreader.data.api.direct.SessionExpiredException) {
+                container.directClient.clearSession()
+                container.settingsStore.setLoggedInUser(null)
+                Resource.Error("登录已过期，请重新登录账号后查看站点收藏")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Resource.Error("加载收藏失败：${com.jmreader.core.Logger.friendlyError(e.message ?: e::class.simpleName.orEmpty())}")
+            }
         }
     }
 
@@ -178,7 +255,19 @@ class JMRepository(private val container: AppContainer) {
                 Resource.Loading -> Resource.Loading
             }
         } else {
-            runCatching { container.directClient.addFavorite(id) }.toResource("添加收藏失败")
+            // 会话过期同样清登录态引导重新登录（与 serverFavorites 一致）
+            try {
+                container.directClient.addFavorite(id)
+                Resource.Success(true)
+            } catch (e: com.jmreader.data.api.direct.SessionExpiredException) {
+                container.directClient.clearSession()
+                container.settingsStore.setLoggedInUser(null)
+                Resource.Error("登录已过期，请重新登录后再收藏")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Resource.Error("添加收藏失败：${com.jmreader.core.Logger.friendlyError(e.message ?: e::class.simpleName.orEmpty())}")
+            }
         }
     }
 

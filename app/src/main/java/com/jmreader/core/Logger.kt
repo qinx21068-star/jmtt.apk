@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object Logger {
 
-    private const val TAG = "JMReader"
+    private const val TAG = "Iris"
     private const val MAX_LINES = 1500          // 内存缓冲上限
     private const val MAX_FILE_BYTES = 2 * 1024 * 1024  // 单文件 2MB 上限
 
@@ -42,6 +42,8 @@ object Logger {
     val recent: StateFlow<List<Entry>> = _recent.asStateFlow()
 
     private val buffer = ConcurrentLinkedDeque<Entry>()
+    /** v27.5 性能修复：用 AtomicInteger 维护计数，避免 ConcurrentLinkedDeque.size() 的 O(n) 遍历 */
+    private val bufferSize = java.util.concurrent.atomic.AtomicInteger(0)
     private var logFile: File? = null
     private var appContext: Context? = null
     private val seqCounter = AtomicLong(0)
@@ -50,7 +52,11 @@ object Logger {
     private val fmt = object : ThreadLocal<SimpleDateFormat>() {
         override fun initialValue() = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
     }
-    private fun formatTime(t: Long): String = fmt.get()!!.format(Date(t))
+    // v27.5 稳定性加固：避免 `fmt.get()!!` 强解——理论上 ThreadLocal.initialValue 已保证非 null，
+    // 但 R8 fullMode 在极端情况下可能误裁剪 initialValue；做兜底更稳。
+    private val fallbackFmt by lazy { SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US) }
+    private fun formatTime(t: Long): String =
+        (fmt.get() ?: fallbackFmt).format(Date(t))
 
     // 单线程串行落盘，避免 writing 标志丢日志，也避免并发 appendText 交错
     private val writerThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -76,6 +82,11 @@ object Logger {
     fun e(tag: String = TAG, msg: String, t: Throwable? = null) = log(Level.E, tag, msg, t)
 
     private fun log(level: Level, tag: String, msg: String, t: Throwable?) {
+        // v27.5 性能修复：release 构建跳过 V/D/I 级别日志（仍保留 W/E 用于排查问题）。
+        // 之前每张图片加载都打 Logger.d("JmImg", ...) → buildString + Logcat + 入队 + 异步落盘，
+        // 阅读器翻一章 30-50 张图就是 30-50 条日志排队写盘，热路径严重拖慢。
+        if (!com.jmreader.BuildConfig.DEBUG && level != Level.W && level != Level.E) return
+
         val full = buildString {
             append(msg)
             if (t != null) {
@@ -84,7 +95,12 @@ object Logger {
         }
         val entry = Entry(seqCounter.incrementAndGet(), System.currentTimeMillis(), level, tag, full)
         buffer.addLast(entry)
-        while (buffer.size > MAX_LINES) buffer.pollFirst()
+        // v27.5 性能修复：用 AtomicInteger 计数判断上限，
+        // 避免 ConcurrentLinkedDeque.size() 的 O(n) 遍历（每次写日志都遍历几千个节点）
+        while (bufferSize.incrementAndGet() > MAX_LINES) {
+            buffer.pollFirst()
+            bufferSize.decrementAndGet()
+        }
         // 限频发射快照，避免高频日志每条都 toList() + 重组 UI
         val now = System.nanoTime()
         if (now - lastEmitNs > 80_000_000L) {
@@ -92,13 +108,15 @@ object Logger {
             lastEmitNs = now
         }
 
-        // logcat
-        when (level) {
-            Level.V -> Log.v(tag, full)
-            Level.D -> Log.d(tag, full)
-            Level.I -> Log.i(tag, full)
-            Level.W -> Log.w(tag, full)
-            Level.E -> Log.e(tag, full)
+        // logcat：release 构建也跳过 V/D/I 的 Logcat 输出
+        if (com.jmreader.BuildConfig.DEBUG || level == Level.W || level == Level.E) {
+            when (level) {
+                Level.V -> Log.v(tag, full)
+                Level.D -> Log.d(tag, full)
+                Level.I -> Log.i(tag, full)
+                Level.W -> Log.w(tag, full)
+                Level.E -> Log.e(tag, full)
+            }
         }
 
         // 文件（异步串行落盘，不丢日志）
@@ -147,6 +165,7 @@ object Logger {
 
     fun clear() {
         buffer.clear()
+        bufferSize.set(0)
         _recent.value = emptyList()
         logFile?.let { runCatching { it.writeText("") } }
     }

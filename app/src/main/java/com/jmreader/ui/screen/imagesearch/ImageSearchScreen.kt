@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,6 +77,17 @@ fun ImageSearchScreen(
     var webView by remember { mutableStateOf<WebView?>(null) }
     // WebView 文件选择回调（点网页 <input type=file> 时由 onShowFileChooser 注入）
     var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+
+    // 关键修复（Bug 41）：CF Turnstile 验证完成后 SauceNAO 内部跳转/重渲染，
+    // onPageStarted 会把 loading=true，但 onProgressChanged 可能卡在 90+ 永远不到 100，
+    // onPageFinished 也不触发 → 蒙层永久覆盖 WebView，用户看不到内容无法搜图。
+    // 兜底：loading=true 后 8 秒强制置 false（网页通常 8s 内已可用）。
+    LaunchedEffect(loading) {
+        if (loading) {
+            kotlinx.coroutines.delay(8000L)
+            loading = false
+        }
+    }
 
     // 系统图片选择器：选完图回传给 WebView 的 ValueCallback
     val filePicker = rememberLauncherForActivityResult(

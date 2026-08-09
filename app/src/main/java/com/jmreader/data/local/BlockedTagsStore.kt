@@ -2,9 +2,11 @@ package com.jmreader.data.local
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
@@ -12,7 +14,7 @@ import kotlinx.coroutines.flow.map
  * 屏蔽规则：支持三类屏蔽。
  *
  * 1. 按 tag 屏蔽：含任意被屏蔽 tag 的漫画不显示。
- *    注意：禁漫列表接口不返回 tags，需异步调 /album 补全（见 BaseListViewModel.enrichTags）。
+ *    列表接口不返回 tags，用 ComicTagsCache 持久化缓存 + enrich 补全后的 tags 判定。
  *    匹配时做繁简归一化 + 小写，避免"純愛"vs"纯爱"不命中。
  *
  * 2. 按名称关键词屏蔽：漫画标题包含任意被屏蔽关键词即不显示。
@@ -28,14 +30,22 @@ class BlockedTagsStore(private val context: Context) {
     private val nameKey = stringSetPreferencesKey("names")
     private val authorKey = stringSetPreferencesKey("authors")
 
+    // v27.5 稳定性加固：DataStore 文件损坏时 .catch 回退到 emptyPreferences，
+    // 让下游订阅者拿到空集合而不是抛 IOException 崩溃。
+    private val safeData = context.blockedTagsStore.data
+        .catch { e ->
+            com.jmreader.core.Logger.w("BlockedTags", "DataStore 读取失败", e)
+            emit(emptyPreferences())
+        }
+
     /** 被屏蔽的 tag 集合。 */
-    val tags: Flow<Set<String>> = context.blockedTagsStore.data.map { it[tagKey] ?: emptySet() }
+    val tags: Flow<Set<String>> = safeData.map { it[tagKey] ?: emptySet() }
 
     /** 被屏蔽的名称关键词集合。 */
-    val names: Flow<Set<String>> = context.blockedTagsStore.data.map { it[nameKey] ?: emptySet() }
+    val names: Flow<Set<String>> = safeData.map { it[nameKey] ?: emptySet() }
 
     /** 被屏蔽的作者集合。 */
-    val authors: Flow<Set<String>> = context.blockedTagsStore.data.map { it[authorKey] ?: emptySet() }
+    val authors: Flow<Set<String>> = safeData.map { it[authorKey] ?: emptySet() }
 
     /** tags + names + authors 合并的实时集合，供 ViewModel 监听变化触发重过滤。 */
     val allRules: Flow<Triple<Set<String>, Set<String>, Set<String>>> =
@@ -50,8 +60,10 @@ class BlockedTagsStore(private val context: Context) {
     }
 
     suspend fun removeTag(tag: String) {
+        // 与 addTag 对称：trim 后再删除。否则传入 " NTR " 删不掉集合里的 "NTR"。
+        val t = tag.trim()
         context.blockedTagsStore.edit { prefs ->
-            prefs[tagKey] = (prefs[tagKey] ?: emptySet()) - tag
+            prefs[tagKey] = (prefs[tagKey] ?: emptySet()) - t
         }
     }
 
@@ -64,8 +76,9 @@ class BlockedTagsStore(private val context: Context) {
     }
 
     suspend fun removeName(name: String) {
+        val n = name.trim()
         context.blockedTagsStore.edit { prefs ->
-            prefs[nameKey] = (prefs[nameKey] ?: emptySet()) - name
+            prefs[nameKey] = (prefs[nameKey] ?: emptySet()) - n
         }
     }
 
@@ -78,8 +91,9 @@ class BlockedTagsStore(private val context: Context) {
     }
 
     suspend fun removeAuthor(author: String) {
+        val a = author.trim()
         context.blockedTagsStore.edit { prefs ->
-            prefs[authorKey] = (prefs[authorKey] ?: emptySet()) - author
+            prefs[authorKey] = (prefs[authorKey] ?: emptySet()) - a
         }
     }
 
@@ -91,7 +105,7 @@ class BlockedTagsStore(private val context: Context) {
      *
      * 大小写：normalize 已做 lowercase()，屏蔽 "ntr" 可命中 "NTR"/"Ntr"/"nTr" 等。
      *
-     * @param comicTags 漫画的标签集合（可能来自列表项的 category 兜底，或异步补全的真实 tags）
+     * @param comicTags 漫画的标签集合（列表接口 parseItemTags 返回的真实 tags）
      * @param comicName 漫画标题
      * @param comicAuthor 漫画作者（列表接口通常已返回）
      * @param rules 预归一化的屏蔽规则集合（由 [normalizeRules] 生成）
@@ -152,9 +166,21 @@ class BlockedTagsStore(private val context: Context) {
      * 归一化：去空白 + 转小写 + 繁体转简体。
      * 禁漫返回繁体（"純愛"），用户多输入简体（"纯爱"），必须统一才能命中。
      * 大小写：lowercase() 保证 "NTR" 与 "ntr" 归一化后一致。
+     *
+     * v27.12 性能修复：加 LruCache 缓存归一化结果。
+     * 之前每次 applyBlock 都会对列表中所有本子的 name/author/tags 重新归一化，
+     * enrich 节流刷新（200ms 一次）时大量重复 convert → GC 压力 → 主线程卡顿。
+     * 实测列表 100+ 本子、tags 平均 5 个，每次刷新要做 600+ 次 buildString 分配。
+     * 缓存命中后零分配，是滑动卡顿的关键根因之一。
      */
+    private val normalizeCache = android.util.LruCache<String, String>(512)
     private fun normalize(s: String): String {
-        return CommonT2S.convert(s.trim().lowercase())
+        if (s.isEmpty()) return s
+        val cached = normalizeCache.get(s)
+        if (cached != null) return cached
+        val r = CommonT2S.convert(s.trim().lowercase())
+        normalizeCache.put(s, r)
+        return r
     }
 }
 

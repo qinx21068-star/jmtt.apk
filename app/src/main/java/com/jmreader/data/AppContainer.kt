@@ -6,15 +6,22 @@ import com.jmreader.data.api.NetworkFactory
 import com.jmreader.data.api.direct.JmDirectClient
 import com.jmreader.data.local.BlockedTagsStore
 import com.jmreader.data.local.BrowseHistoryStore
+import com.jmreader.data.local.ComicTagsCache
 import com.jmreader.data.local.FavoritesStore
 import com.jmreader.data.local.HistoryStore
 import com.jmreader.data.local.SearchHistoryStore
 import com.jmreader.data.local.SettingsStore
 import com.jmreader.data.repository.JMRepository
+import com.jmreader.core.CrashHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.plus
 
 /**
  * 手动依赖容器：App 启动时创建一次，避免引入 Hilt/KSP，降低构建复杂度。
@@ -32,22 +39,40 @@ class AppContainer(context: Context) {
 
     private val appContext: Context = context.applicationContext
 
-    val settingsStore = SettingsStore(appContext)
+    /** v27.13：暴露 appContext 供 ReaderViewModel 预取图片用 */
+    val applicationContext: Context get() = appContext
+
+    /**
+     * App 级协程 scope，生命周期与 App 进程一致。
+     * 用于 VM 销毁后仍需完成的短任务（如阅读进度落盘），
+     * 替代反模式 GlobalScope。比 viewModelScope 存活更久，进程退出前有机会完成。
+     *
+     * v27.5 稳定性加固：附加 CrashHandler.coroutineHandler 兜底未捕获异常。
+     * 之前 viewModelScope.onCleared 内 launch 的进度保存任务，若 IO 失败会冒泡
+     * 到 Thread.UncaughtExceptionHandler → 进程崩溃。加 CEH 后仅记日志不崩。
+     */
+    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CrashHandler.coroutineHandler)
+
+    val settingsStore = SettingsStore(appContext, appScope)
     val blockedTagsStore = BlockedTagsStore(appContext)
-    val favoritesStore = FavoritesStore(appContext, NetworkFactory.moshi)
-    val historyStore = HistoryStore(appContext, NetworkFactory.moshi)
-    val browseHistoryStore = BrowseHistoryStore(appContext, NetworkFactory.moshi)
+    /** 漫画 tags 持久化缓存：列表接口不返回 tags，用此缓存补全用于即时屏蔽 + 卡片显示。 */
+    val comicTagsCache = ComicTagsCache(appContext, appScope)
+    val favoritesStore = FavoritesStore(appContext, NetworkFactory.moshi, appScope)
+    val historyStore = HistoryStore(appContext, NetworkFactory.moshi, appScope)
+    val browseHistoryStore = BrowseHistoryStore(appContext, NetworkFactory.moshi, appScope)
     val searchHistoryStore = SearchHistoryStore(appContext)
     /** SauceNAO 以图搜图服务（无 key 也能用，限流更严） */
     val saucenaoService = com.jmreader.data.api.saucenao.SaucenaoService()
     val downloadManager = com.jmreader.data.download.DownloadManager(appContext, this)
 
     /** 直连客户端（单例，App 生命周期内复用，内部带 cookie/scramble 缓存）。 */
-    val directClient: JmDirectClient by lazy { JmDirectClient() }
+    val directClient: JmDirectClient by lazy { JmDirectClient(appContext, appScope) }
 
     // 后端模式相关（可选）
     private val _api = MutableStateFlow<JMApi?>(null)
     val api: StateFlow<JMApi?> = _api.asStateFlow()
+    /** 当前后端 OkHttpClient，rebuildApi 时 shutdown 旧的避免线程/连接池泄漏。 */
+    private var backendClient: okhttp3.OkHttpClient? = null
 
     /** 是否走后端模式：仅当用户配置了非空后端地址时为 true。 */
     suspend fun useBackend(): Boolean = settingsStore.settings.first().serverUrl.isNotBlank()
@@ -60,24 +85,54 @@ class AppContainer(context: Context) {
             throw IllegalStateException("后端地址未配置：当前为直连模式，无需配置后端；如需切换到后端模式，请到「设置 → 后端地址」填写地址。")
         }
         val built = NetworkFactory.build(url)
-        _api.value = built
-        return built
+        backendClient = built.client
+        _api.value = built.api
+        return built.api
     }
 
     /** 当用户在后端切换地址后调用，强制重建 Retrofit。 */
     suspend fun rebuildApi() {
-        val url = settingsStore.settings.first().serverUrl
-        // 清空地址时直接置空缓存，回到直连模式
-        _api.value = if (url.isBlank()) null else NetworkFactory.build(url)
+        val s = settingsStore.settings.first()
+        val url = s.serverUrl
+        // 关键修复：shutdown 旧 OkHttpClient 的连接池与 Dispatcher 线程池，
+        // 避免每次切换后端地址都泄漏一个 client（含线程池/连接池），频繁切换后线程数飙升导致 OOM/ANR。
+        val oldClient = backendClient
+        backendClient = null
+        if (url.isBlank()) {
+            _api.value = null
+        } else {
+            // v27.5 #37：把代理设置一并传给 Retrofit client
+            val built = NetworkFactory.build(url, s.proxy)
+            backendClient = built.client
+            _api.value = built.api
+        }
+        oldClient?.let { c ->
+            appScope.launch {
+                runCatching {
+                    c.dispatcher.executorService.shutdown()
+                    c.connectionPool.evictAll()
+                }
+            }
+        }
+        // v27.5 #37：同步把代理应用到直连客户端（默认模式）
+        runCatching { directClient.applyProxy(s.proxy) }
     }
 
     val repository = JMRepository(this)
 
-    /** 论坛 Repository：解析禁漫网页端论坛 HTML（Jsoup），HTML 由 forumHtmlFetcher 通过 WebView 抓取（绕 Cloudflare）。 */
-    val forumRepository = com.jmreader.data.api.forum.ForumRepository
-
-    /** 论坛 HTML 抓取器：用隐藏 WebView 加载论坛页面拿 HTML（绕 Cloudflare JS 挑战）。 */
-    val forumHtmlFetcher = com.jmreader.data.api.forum.ForumHtmlFetcher(appContext)
+    /**
+     * v27.5：清除 Coil 图片缓存（内存 + 磁盘）。
+     * 在 IO 线程执行避免阻塞 UI。
+     */
+    fun clearImageCache() {
+        appScope.launch {
+            runCatching {
+                val loader = coil.Coil.imageLoader(appContext)
+                loader.memoryCache?.clear()
+                loader.diskCache?.clear()
+            }
+        }
+    }
 
     /**
      * 连通性检查：

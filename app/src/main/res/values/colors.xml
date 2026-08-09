@@ -1,3 +1,5 @@
 <resources>
-    <color name="splash_bg">#1A1A2E</color>
+    <!-- 启动屏背景：与 ic_launcher_background 一致（浅蓝灰 EFF3F6，蓝白风格），
+         让一根葱图标在自适应图标背景上更突出，启动时无缝过渡到主界面。 -->
+    <color name="splash_bg">#EFF3F6</color>
 </resources>

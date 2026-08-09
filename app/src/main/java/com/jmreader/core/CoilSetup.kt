@@ -41,19 +41,26 @@ object CoilSetup : ImageLoaderFactory {
         val ctx = app ?: error("CoilSetup.app 未初始化")
         val client = okClient ?: OkHttpClient.Builder().build()
         val dc = directClient
+        // 禁漫图片解密临时文件目录：用 cacheDir 下的子目录，fetch 时自动清理旧文件
+        val imgTempDir = java.io.File(ctx.cacheDir, "jm_img_temp").apply { if (!exists()) mkdirs() }
         return ImageLoader.Builder(ctx)
             .okHttpClient(client)
             // 注册禁漫图片解密 Fetcher（仅处理带 jm_sid 的 URL，其他交给默认 fetcher）
             .components {
-                if (dc != null) add(JmImageFetcher.Factory(client, dc))
+                if (dc != null) add(JmImageFetcher.Factory(client, dc, imgTempDir))
             }
             .memoryCache {
-                MemoryCache.Builder(ctx).maxSizePercent(0.25).build()
+                // v27.6：从 25% 增到 35%，阅读器翻页来回切换时更多图片命中内存缓存，
+                // 避免重复从磁盘临时文件解码（JmImageFetcher 每次都解码+写临时文件很慢）
+                MemoryCache.Builder(ctx).maxSizePercent(0.35).build()
             }
             .diskCache {
                 DiskCache.Builder()
                     .directory(ctx.cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(100L * 1024 * 1024)
+                    // 500MB：阅读器图片可重复利用，划回去不用重新下载。
+                    // 之前 100MB 太小，一本本子 30-50 张图约 10-25MB，只能缓存 4-10 本，
+                    // 导致"当前话已加载的内容划回去要重新加载"。
+                    .maxSizeBytes(500L * 1024 * 1024)
                     .build()
             }
             // 关键性能优化：不开全局 crossfade。

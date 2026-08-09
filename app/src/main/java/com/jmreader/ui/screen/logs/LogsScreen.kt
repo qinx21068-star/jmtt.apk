@@ -70,6 +70,18 @@ fun LogsScreen(onBack: () -> Unit) {
         else entries.reversed().filter { filter.match(it.level) }
     }
 
+    // 关键修复（Bug 20）：新日志到达时自动滚到顶显示最新。
+    // shown 已 reversed，newest 在 index 0；LazyListState 保持视觉稳定，
+    // 新日志到达后原本在顶部的项会下移到 index 1。
+    // 若用户在顶部附近（firstVisibleItemIndex <= 1）则滚到顶显示最新；
+    // 否则用户在翻看旧日志，不强制打断。
+    // 同时 filter 切换时 shown 列表整体变化，也滚到顶显示第一条匹配项。
+    androidx.compose.runtime.LaunchedEffect(shown.size) {
+        if (state.firstVisibleItemIndex <= 1) {
+            state.scrollToItem(0)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -81,13 +93,23 @@ fun LogsScreen(onBack: () -> Unit) {
                 },
                 actions = {
                     IconButton(onClick = {
-                        val text = Logger.export()
-                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_SUBJECT, "JMReader 日志")
-                            putExtra(android.content.Intent.EXTRA_TEXT, text)
+                        // v27.5 稳定性加固：startActivity 可能抛 ActivityNotFoundException
+                        //（无邮件/分享应用）或 SecurityException（权限问题），未捕获会杀进程。
+                        try {
+                            val text = Logger.export()
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_SUBJECT, "一根葱 日志")
+                                putExtra(android.content.Intent.EXTRA_TEXT, text)
+                            }
+                            ctx.startActivity(android.content.Intent.createChooser(send, "分享日志"))
+                        } catch (e: android.content.ActivityNotFoundException) {
+                            com.jmreader.core.Logger.w("Logs", "无应用可分享日志: ${e.message}")
+                            scope.launch { snackbar.showSnackbar("未找到可分享的应用") }
+                        } catch (e: Throwable) {
+                            com.jmreader.core.Logger.w("Logs", "分享日志失败: ${com.jmreader.core.Logger.brief(e)}")
+                            scope.launch { snackbar.showSnackbar("分享失败：${e.message ?: "未知错误"}") }
                         }
-                        ctx.startActivity(android.content.Intent.createChooser(send, "分享日志"))
                     }) { Icon(Icons.Outlined.Share, contentDescription = "分享") }
                     IconButton(onClick = { showClearConfirm = true }) {
                         Icon(Icons.Outlined.Delete, contentDescription = "清空")
@@ -97,42 +119,43 @@ fun LogsScreen(onBack: () -> Unit) {
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { inner ->
-        Column(Modifier.fillMaxSize().padding(inner).background(Color(0xFF1E1E1E))) {
-            // 级别筛选 + 日志文件路径（便于定位问题）
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                LogFilter.entries.forEach { f ->
-                    FilterChip(
-                        selected = filter == f,
-                        onClick = { filter = f },
-                        label = { Text(f.label) },
+        // v27.7：级别筛选 + 文件路径移入 LazyColumn 作为首 item，随滚动移出视野（举一反三）
+        LazyColumn(
+            state = state,
+            modifier = Modifier.fillMaxSize().padding(inner).background(Color(0xFF1E1E1E)),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            // 级别筛选 chip 行 + 日志文件路径（便于定位问题）
+            item(key = "logs_header") {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LogFilter.entries.forEach { f ->
+                        FilterChip(
+                            selected = filter == f,
+                            onClick = { filter = f },
+                            label = { Text(f.label) },
+                        )
+                    }
+                }
+                Logger.filePath()?.let { path ->
+                    Text(
+                        text = "文件：$path",
+                        color = Color(0xFF757575),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
                     )
                 }
             }
-            Logger.filePath()?.let { path ->
-                Text(
-                    text = "文件：$path",
-                    color = Color(0xFF757575),
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-                )
-            }
-            LazyColumn(
-                state = state,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                items(shown, key = { it.seq }) { e ->
-                    LogRow(e, onCopy = { msg ->
-                        val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
-                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("log", msg))
-                        scope.launch { snackbar.showSnackbar("已复制") }
-                    })
-                }
+            items(shown, key = { it.seq }) { e ->
+                LogRow(e, onCopy = { msg ->
+                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("log", msg))
+                    scope.launch { snackbar.showSnackbar("已复制") }
+                })
             }
         }
     }

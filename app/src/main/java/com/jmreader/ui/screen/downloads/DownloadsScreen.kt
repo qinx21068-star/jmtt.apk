@@ -2,6 +2,10 @@
 
 package com.jmreader.ui.screen.downloads
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,17 +15,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -37,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -50,11 +60,47 @@ import kotlinx.coroutines.launch
 @Composable
 fun DownloadsScreen(container: AppContainer, navController: NavController) {
     val tasks by container.downloadManager.tasks.collectAsState()
+    // v27.5 性能优化：用 cachedSnapshot 作为初始值，避免 null → 默认 → 真实 两轮重组
+    val settings by container.settingsStore.settings.collectAsState(initial = container.settingsStore.cachedSnapshot)
+    val localSearchEnabled = settings.localSearchEnabled
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     var showClearAll by remember { mutableStateOf(false) }
     // 单条删除确认：记录待删除的任务，确认后才真正删除
     var deleteTarget by remember { mutableStateOf<DownloadTask?>(null) }
+    // v27.5 #19 本地搜索关键词
+    var searchQuery by remember { mutableStateOf("") }
+
+    // v27.5 #17 SAF 路径选择器：用户选目录后持久化 URI 权限并写入 settings
+    val saFLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri: Uri? ->
+        if (uri != null) {
+            // 持久化 URI 读写权限，避免重启后失去访问
+            runCatching {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                ctx.contentResolver.takePersistableUriPermission(uri, flags)
+            }
+            scope.launch {
+                container.settingsStore.setDownloadDirUri(uri.toString())
+                snackbar.showSnackbar("已设置下载路径，下载完成后将自动复制到外部存储")
+            }
+        }
+    }
+
+    // v27.5 #19 本地搜索：按标题/作者/JM号过滤
+    val visibleTasks = remember(tasks, searchQuery, localSearchEnabled) {
+        if (!localSearchEnabled || searchQuery.isBlank()) tasks
+        else {
+            val q = searchQuery.trim()
+            tasks.filter { t ->
+                t.comic.name.contains(q, ignoreCase = true) ||
+                    (t.comic.author?.contains(q, ignoreCase = true) ?: false) ||
+                    t.comic.id.contains(q, ignoreCase = true)
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -66,6 +112,10 @@ fun DownloadsScreen(container: AppContainer, navController: NavController) {
                     }
                 },
                 actions = {
+                    // v27.5 #17 SAF 路径选择：选外置 SD 卡目录
+                    IconButton(onClick = { saFLauncher.launch(null) }) {
+                        Icon(Icons.Outlined.Folder, contentDescription = "选择下载路径")
+                    }
                     // 一键清空（带确认对话框，避免误触）
                     if (tasks.isNotEmpty()) {
                         IconButton(onClick = { showClearAll = true }) {
@@ -77,30 +127,69 @@ fun DownloadsScreen(container: AppContainer, navController: NavController) {
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { inner ->
-        if (tasks.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(inner)) {
-                EmptyBox("还没有下载任务\n在漫画详情页点击「下载」")
-            }
-            return@Scaffold
-        }
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(inner),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            items(tasks, key = { it.comic.id }) { task ->
-                DownloadItem(
-                    task = task,
-                    onOpen = { navController.navigate(Routes.detail(task.comic.id)) },
-                    onRetry = {
-                        val ok = container.downloadManager.retry(task.comic)
-                        scope.launch {
-                            snackbar.showSnackbar(if (ok) "已重新加入队列" else "无法重试：缺少详情数据，请到详情页重新下载")
+        Column(Modifier.fillMaxSize().padding(inner)) {
+            // v27.5 #19 本地搜索框：开启开关且有任务时显示
+            if (localSearchEnabled && tasks.isNotEmpty()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    placeholder = { Text("搜索已下载的本子（标题/作者/JM号）") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Outlined.Close, contentDescription = "清空")
+                            }
                         }
                     },
-                    onDelete = { deleteTarget = task },
+                    singleLine = true,
                 )
+            }
+            if (tasks.isEmpty()) {
+                Box(Modifier.fillMaxSize()) {
+                    EmptyBox("还没有下载任务\n在漫画详情页点击「下载」")
+                }
+            } else if (visibleTasks.isEmpty()) {
+                Box(Modifier.fillMaxSize()) {
+                    EmptyBox("没有匹配「$searchQuery」的下载")
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // v27.5 稳定性加固：用 itemsIndexed + 复合 key，避免 comic.id 为空或重复时
+                    // LazyColumn 抛 IllegalArgumentException: Key "xxx" was already used 崩溃
+                    itemsIndexed(
+                        visibleTasks,
+                        key = { i, t -> t.comic.id.ifBlank { "idx_$i" } },
+                        contentType = { _, _ -> "download_row" },
+                    ) { _, task ->
+                        // v27.5 性能修复：lambda 用 remember 缓存，避免每次重组新建 lambda
+                        // 导致 DownloadItem 无法跳过重组
+                        val onOpen = remember(task, navController) {
+                            { navController.navigate(Routes.detail(task.comic.id)) }
+                        }
+                        val onRetry = remember(task, container, scope, snackbar) {
+                            {
+                                val ok = container.downloadManager.retry(task.comic)
+                                scope.launch {
+                                    snackbar.showSnackbar(if (ok) "已重新加入队列" else "无法重试：缺少详情数据，请到详情页重新下载")
+                                }
+                                Unit
+                            }
+                        }
+                        val onDelete = remember(task) { { deleteTarget = task } }
+                        DownloadItem(
+                            task = task,
+                            onOpen = onOpen,
+                            onRetry = onRetry,
+                            onDelete = onDelete,
+                        )
+                    }
+                }
             }
         }
     }

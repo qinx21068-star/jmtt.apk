@@ -70,12 +70,30 @@ object JmImageDecoder {
     /**
      * 解密图片字节，返回还原后的 bitmap。
      * 若无需分割，直接解码原图。
+     *
+     * v27.5 稳定性加固：scramble 内 Bitmap.createBitmap 在大图 + 内存紧张时可能 OOM，
+     * 用 runCatching 兜底；失败时回退返回原图（不分割），让 UI 至少能显示一张图，
+     * 而不是直接抛 OutOfMemoryError 让 Coil 把整张图加载流程崩掉。
+     *
+     * v27.5 稳定性加固：BitmapFactory.decodeByteArray 同样可能抛 OutOfMemoryError
+     * （大图解码成 100MP bitmap 需要数百 MB 堆），之前未包裹，OOM 会沿调用链冒泡到
+     * JmImageFetcher.fetch() → Coil 把整张图加载流程崩掉，且 OOM 后进程不稳定。
+     * 现在用 runCatching 兜底，OOM 时返回 null（让 decodeToBytes 退化为返回原始字节，
+     * 与 scramble 失败时的兜底策略一致）。
      */
     fun decode(bytes: ByteArray, scrambleId: Long, aid: Long, filename: String): Bitmap? {
-        val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val src = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            .getOrElse {
+                Logger.w("JmImg", "decodeByteArray 失败 aid=$aid: ${Logger.brief(it)}")
+                return null
+            } ?: return null
         val num = getScrambleNum(scrambleId, aid, filename)
         if (num == 0) return src
-        return scramble(src, num)
+        return runCatching { scramble(src, num) }.getOrElse {
+            // 分割失败（如 OOM）：返回未分割的原图，至少能显示
+            Logger.w("JmImg", "图片分割失败 num=$num aid=$aid: ${Logger.brief(it)}")
+            src
+        }
     }
 
     /**
@@ -126,8 +144,24 @@ object JmImageDecoder {
     /** 解密并把结果编码为字节数组（jpeg），供 Coil/下载流程使用。 */
     fun decodeToBytes(bytes: ByteArray, scrambleId: Long, aid: Long, filename: String): ByteArray {
         val bmp = decode(bytes, scrambleId, aid, filename) ?: return bytes
-        val baos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 92, baos)
-        return baos.toByteArray()
+        try {
+            // v27.5 稳定性加固：compress/toByteArray 对大图可能 OOM（baos.toByteArray 复制一份完整 JPEG 字节）。
+            // 失败时 return bytes（原始未解密字节），与 decode 失败的兜底策略一致。
+            // 不让 OOM 冒泡到 JmImageFetcher.fetch / DownloadManager.runDownload 导致整章加载失败。
+            return runCatching {
+                val baos = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 92, baos)
+                baos.toByteArray()
+            }.getOrElse {
+                Logger.w("JmImg", "compress/toByteArray 失败 aid=$aid: ${Logger.brief(it)}")
+                bytes
+            }
+        } finally {
+            // v27.5 稳定性加固：bmp 是从 BitmapFactory.decodeByteArray 出来的大图（可能数 MB），
+            // compress 完成后不再使用，必须 recycle 释放原生堆内存。
+            // 不 recycle 时连续解码多张大图会累积 OOM，触发 Coil 加载失败 → 阅读页空白页。
+            // 注意 decode() 在 num==0 时返回的 src 也是同一来源，同样需要 recycle。
+            if (!bmp.isRecycled) bmp.recycle()
+        }
     }
 }
