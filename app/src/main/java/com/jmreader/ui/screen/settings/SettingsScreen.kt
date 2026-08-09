@@ -1898,7 +1898,7 @@ private fun AboutSettingsScreen(
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                "一根葱 · 干净无广告的第三方客户端。请合规使用，仅限个人学习。",
+                "一根葱 · 第三方 jmcomic2 客户端。干净无广告，仅供个人学习交流。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
