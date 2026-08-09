@@ -4,7 +4,8 @@ JMReader 后端 —— 使用 FastAPI 封装 jmcomic 库，为安卓客户端提
 运行方式：
     cd backend
     pip install -r requirements.txt
-    uvicorn main:app --host 0.0.0.0 --port 8000
+    python main.py
+    # 默认监听 127.0.0.1:8000（仅本机）；需局域网访问设置 JM_HOST=0.0.0.0
 
 说明：
 - 站点经常换域，请先在 option.yaml 中配置 domain；或通过环境变量
@@ -15,14 +16,18 @@ JMReader 后端 —— 使用 FastAPI 封装 jmcomic 库，为安卓客户端提
 from __future__ import annotations
 
 import io
+import logging
 import os
 import threading
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
+
+logger = logging.getLogger("jmreader.backend")
 
 try:
     import jmcomic
@@ -51,14 +56,14 @@ def _build_option():
     if os.path.exists(yaml_path):
         try:
             return jmcomic.JmOption.from_file(yaml_path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("加载 option.yaml 失败，使用默认配置", exc_info=True)
     # 默认配置：不下载原图、使用移动端接口
     option = jmcomic.JmOption.default()
     try:
         option.impl_api = "api"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("设置 impl_api 失败", exc_info=True)
     option.download.dir = DOWNLOAD_DIR
     return option
 
@@ -83,8 +88,8 @@ def get_client():
             if LOGIN_USER and LOGIN_PASS:
                 try:
                     _client.login(LOGIN_USER, LOGIN_PASS)
-                except Exception:
-                    pass  # 登录失败不阻断启动
+                except Exception as e:
+                    logger.debug("登录失败", exc_info=True)  # 登录失败不阻断启动
     return _client
 
 
@@ -143,6 +148,38 @@ class LoginReq(BaseModel):
 # 工具函数
 # ---------------------------------------------------------------------------
 
+# 允许图片代理的域名后缀白名单（防止 SSRF：禁止请求内网/云元数据等地址）
+_ALLOWED_IMAGE_HOST_SUFFIXES = (
+    ".jmcomic.me",
+    ".jmcomic1.me",
+    ".jmcomic2.me",
+    ".18comic.vip",
+    ".18comic.org",
+    ".18-comic.org",
+    ".jm365.cc",
+    ".cdn-assets.cc",
+)
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    """校验图片 URL 是否属于允许的域名白名单，防止 SSRF。"""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    # 禁止内网地址
+    if host in ("localhost", "0.0.0.0", "::1") or host.startswith("127.") or host.startswith("10.") \
+            or host.startswith("192.168.") or host.startswith("169.254.") \
+            or host.startswith("172."):
+        return False
+    return any(host == s.lstrip(".") or host.endswith(s) for s in _ALLOWED_IMAGE_HOST_SUFFIXES)
+
+
 def _safe_str(v, default="") -> str:
     if v is None:
         return default
@@ -157,13 +194,13 @@ def _brief_from_album(album) -> ComicBrief:
     tags = []
     try:
         tags = [t for t in _safe_str(getattr(album, "tags", "")).split(",") if t]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("解析 tags 字符串失败", exc_info=True)
     if not tags:
         try:
             tags = list(getattr(album, "tags_list", []) or [])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("获取 tags_list 失败", exc_info=True)
     cover = _safe_str(getattr(album, "cover", "") or getattr(album, "cover_url", ""))
     if cover and not cover.startswith("http"):
         cover = f"https://{DOMAIN}/{cover.lstrip('/')}"
@@ -225,8 +262,8 @@ def search(
     for a in content:
         try:
             items.append(_brief_from_album(a))
-        except Exception:
-            continue
+        except Exception as e:
+            logger.debug("构造 brief 失败，跳过", exc_info=True); continue
     total = getattr(result, "page_total", None) or getattr(result, "total", None)
     return PageResult(page=page, total=total, items=items)
 
@@ -277,13 +314,13 @@ def comic_detail(album_id: str):
     tags = []
     try:
         tags = [t for t in _safe_str(getattr(album, "tags", "")).split(",") if t]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("解析 tags 失败", exc_info=True)
     if not tags:
         try:
             tags = list(getattr(album, "tags_list", []) or [])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("获取 tags_list 失败", exc_info=True)
 
     cover = _safe_str(getattr(album, "cover", "") or getattr(album, "cover_url", ""))
     if cover and not cover.startswith("http"):
@@ -298,8 +335,8 @@ def comic_detail(album_id: str):
                 title=_safe_str(getattr(ch, "title", getattr(ch, "name", ""))) or f"第{i+1}章",
                 sort=i,
             ))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("遍历章节失败", exc_info=True)
     if not chapters:
         # 单章节漫画：自身即唯一章节
         chapters.append(Chapter(id=album_id, title=_safe_str(getattr(album, "name", "")) or "正文", sort=0))
@@ -337,8 +374,8 @@ def chapter_images(chapter_id: str):
         # 某些版本直接是字符串列表
         try:
             images = [u for u in raw if isinstance(u, str)]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("解析 raw 图片列表失败", exc_info=True)
 
     return ChapterImages(
         id=chapter_id,
@@ -354,6 +391,9 @@ def proxy_image(url: str = Query(...)):
 
     jmcomic 内部会处理分割/解密，这里用 image_downloader 复用其逻辑。
     """
+    # SSRF 防护：只允许禁漫相关域名的图片 URL
+    if not _is_allowed_image_url(url):
+        raise HTTPException(status_code=403, detail="URL 域名不在允许列表内")
     c = get_client()
     try:
         # 复用 jmcomic 的图片下载+解密能力
@@ -378,8 +418,8 @@ def proxy_image(url: str = Query(...)):
             data = f.read()
         try:
             os.remove(save_path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("删除临时文件失败", exc_info=True)
         return StreamingResponse(io.BytesIO(data), media_type="image/jpeg")
     except JmcomicException as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -416,8 +456,8 @@ def favorites(page: int = Query(1, ge=1)):
     for a in content:
         try:
             items.append(_brief_from_album(a))
-        except Exception:
-            continue
+        except Exception as e:
+            logger.debug("构造 brief 失败，跳过", exc_info=True); continue
     total = getattr(result, "page_total", None)
     return PageResult(page=page, total=total, items=items)
 
@@ -460,4 +500,7 @@ def all_exception(_: object, e: Exception):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    # 默认仅监听本机回环地址，防止公网暴露；需局域网访问时设置 JM_HOST=0.0.0.0
+    host = os.environ.get("JM_HOST", "127.0.0.1")
+    port = int(os.environ.get("JM_PORT", "8000"))
+    uvicorn.run("main:app", host=host, port=port, reload=False)

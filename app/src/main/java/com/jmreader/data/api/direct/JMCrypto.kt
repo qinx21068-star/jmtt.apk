@@ -14,6 +14,12 @@ import javax.crypto.spec.SecretKeySpec
  * - 响应解密：base64 → AES-ECB(key = md5hex(ts + APP_DATA_SECRET) 的 UTF-8 字节) → 去 PKCS7 padding → UTF-8 JSON
  *
  * 说明：md5hex 是 32 字符 hex 串，其 UTF-8 字节为 32 字节，因此 AES 实际是 AES-256-ECB。
+ *
+ * 安全说明（semgrep use-of-md5 / ecb-cipher 告警）：
+ * MD5 和 AES-ECB 均为禁漫服务器规定的协议，客户端必须使用否则无法鉴权/解密。
+ * 这里的 MD5 不用于密码存储或数字签名，仅用于生成请求 token（HMAC 替代品）；
+ * AES-ECB 不用于传输加密，仅用于解密服务器返回的响应体。两者均非本应用自身设计，
+ * 修改算法将导致与服务器不兼容。参见 jmcomic 库 JmCryptoTool 实现。
  */
 object JMCrypto {
 
