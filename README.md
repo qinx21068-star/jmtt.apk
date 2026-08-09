@@ -6,6 +6,44 @@
 
 ---
 
+## 📦 版本历史
+
+### v1.1.0（2026-08-09）
+
+**评论区 / 讨论区**
+- 从 HTML 抓取（jm365 重定向，CF 拦截频繁失效）改为 `/forum` JSON API（token 鉴权 + AES 解密 + 域名轮换），加载稳定性大幅提升
+- 评论区返回后自动重载（之前首次失败后返回需手动重试）
+
+**屏蔽功能**
+- 新增 tags 持久化缓存，列表接口不返回 tags 的问题用缓存补全，第二次加载即时屏蔽
+- 修复 id 为空的条目在有 tag 规则时被永久隐藏的问题
+- 屏蔽规则订阅改用 `WhileSubscribed(5_000L)`，避免多 VM 实例并发订阅浪费
+
+**并发与竞态修复**
+- refresh 取消 loadMore/enrich Job，避免并发写 rawItems 竞态
+- enrich 改用全局缓存，不再依赖快照，loadMore/refresh 不影响 enrich 结果
+- 修复 `cid="0"` 评论 key 撞车导致 LazyColumn 崩溃
+- 修复 `getScrambleId` 失败兜底导致图片错位
+- 修复 `imageDomainList()` 返回可变列表引用的 CME 风险
+- DetailViewModel load / Reader preloadNextChapter 添加 Job 跟踪
+- forum 捕获 SessionExpiredException 并清理会话
+
+**性能优化**
+- DownloadManager 实现图片域名轮换（原单点下载易失败）
+- 优化临时文件清理策略，初始化时清理 .tmp 残留
+- Compose 稳定性配置声明 List/Set/Map 为 stable，减少不必要的重组
+- 阅读器空章节状态显示上一章/下一章按钮
+
+**代码清理**
+- 删除 HTML 抓取相关死代码（ForumHtmlFetcher / ForumRepository / CommentRepository / JmWebFetcher）
+- 清理对应的 proguard 规则和 stability 配置
+
+### v1.0.0（2026-07-06）
+
+首个正式版本。Jetpack Compose + Material 3 漫画阅读客户端，支持直连/后端双模式、离线下载、内容过滤、多域名测速切换。
+
+---
+
 ## ⚖️ 免责声明
 
 **本项目仅供个人学习、技术交流和研究使用。**
@@ -75,7 +113,6 @@
 - **网络**：OkHttp + Retrofit + Moshi
 - **图片**：Coil + Telephoto（缩放）
 - **存储**：DataStore Preferences（设置）+ 文件系统（下载）
-- **HTML 解析**：Jsoup
 - **导航**：Navigation Compose
 - **构建**：Gradle 8.10+ / AGP 8.7+ / Kotlin 2.0+
 

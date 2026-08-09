@@ -71,7 +71,7 @@ class JMApp : Application(), ImageLoaderFactory {
             }
         }
 
-        Logger.i("App", "JMApp 初始化完成，版本=1.0.0，默认直连模式")
+        Logger.i("App", "JMApp 初始化完成，版本=1.1.0，默认直连模式")
     }
 
     /** Coil 通过 Application 上下文拿 ImageLoader。 */
