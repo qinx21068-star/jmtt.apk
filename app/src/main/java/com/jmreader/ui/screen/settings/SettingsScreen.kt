@@ -88,6 +88,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jmreader.R
 import com.jmreader.data.AppContainer
+import com.jmreader.data.local.BlockMode
 import com.jmreader.data.local.CornerMode
 import com.jmreader.data.local.ImageQuality
 import com.jmreader.data.local.RankingPeriod
@@ -262,6 +263,23 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     // ============= v27.5 排行榜 setter =============
     fun setRankingPeriod(p: RankingPeriod) = launchSafe { container.settingsStore.setRankingPeriod(p) }
+
+    /** v27.14：屏蔽模式 setter（HIDE=直接隐藏；COVER_ONLY=仅隐藏封面保留卡片）。 */
+    fun setBlockMode(m: BlockMode) = launchSafe {
+        container.settingsStore.setBlockMode(m)
+        _events.emit(if (m == BlockMode.COVER_ONLY) "已切换为仅隐藏封面" else "已切换为直接隐藏")
+    }
+
+    /**
+     * v27.15：开关「通知栏稍后再看」。
+     *
+     * 开启时：启动 [com.jmreader.notification.ReadLaterForegroundService]（通知权限由 UI 层申请）。
+     * 关闭时：停止 Service，通知自动消失。已收藏的「稍后再看」条目保留。
+     */
+    fun setReadLaterNotificationEnabled(v: Boolean) = launchSafe {
+        container.settingsStore.setReadLaterNotificationEnabled(v)
+        _events.emit(if (v) "已开启通知栏稍后再看" else "已关闭通知栏稍后再看")
+    }
 
     /** 清缓存：图片/搜索/全部。 */
     fun clearCache(target: com.jmreader.data.local.ClearCacheTarget) = launchSafe {
@@ -1419,6 +1437,32 @@ private fun DiscoverySettingsScreen(
             title = stringResource(R.string.settings_group_filter),
             icon = Icons.Outlined.FilterAlt,
         ) {
+            // v27.14：屏蔽模式选择
+            Text("屏蔽模式", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+            Text(
+                "命中屏蔽规则的本子如何显示：直接隐藏从列表移除；仅隐藏封面则保留卡片（标题/作者/标签等），封面替换为打叉占位图。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            val bm = settings?.blockMode ?: BlockMode.HIDE
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                SegmentedButton(
+                    selected = bm == BlockMode.HIDE,
+                    onClick = { vm.setBlockMode(BlockMode.HIDE) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                ) {
+                    Text("直接隐藏", style = MaterialTheme.typography.labelSmall)
+                }
+                SegmentedButton(
+                    selected = bm == BlockMode.COVER_ONLY,
+                    onClick = { vm.setBlockMode(BlockMode.COVER_ONLY) },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                ) {
+                    Text("仅隐藏封面", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
             BlockListSection(
                 title = stringResource(R.string.settings_blocked_tags),
                 subtitle = stringResource(R.string.settings_blocked_tags_desc),
@@ -1862,6 +1906,16 @@ private fun PrivacySettingsScreen(
                 subtitle = "给 Activity 加 FLAG_SECURE，阻止系统截图与最近任务预览。重启后生效。",
                 checked = settings?.blockScreenshots ?: false,
                 onCheckedChange = { vm.setBlockScreenshots(it) },
+                enabled = settingsLoaded,
+            )
+            // v27.15：通知栏稍后再看开关
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+            SwitchRow(
+                title = "通知栏稍后再看",
+                subtitle = "在通知栏常驻一条通知，下拉后在通知里直接输入 JM 号（支持空格/逗号分隔多个）加入「稍后再看」收藏夹。" +
+                    "首次开启会申请通知权限，授予后通知出现；用户可在系统设置里随时收回权限。",
+                checked = settings?.readLaterNotificationEnabled ?: false,
+                onCheckedChange = { vm.setReadLaterNotificationEnabled(it) },
                 enabled = settingsLoaded,
             )
         }

@@ -1,9 +1,11 @@
 package com.jmreader
 
+import android.Manifest
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -23,6 +25,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import com.jmreader.notification.ReadLaterServiceController
 import com.jmreader.ui.components.DisclaimerDialog
 import com.jmreader.ui.nav.JMApp
 import com.jmreader.ui.screen.lock.AppLockScreen
@@ -68,6 +71,39 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * v27.15 稍后再看通知权限管理。
+     *
+     * 流程：
+     * - 用户在设置开启 readLaterNotificationEnabled → settings collector 检测到，
+     *   若 Android 13+ 且未授权 → 启动 [notificationPermissionLauncher] 申请。
+     * - 用户授予 → [onNotificationPermissionResult] 启动 Service。
+     * - 用户拒绝 → 自动把 settings 改回 false（让 UI 显示与实际状态一致），并提示。
+     * - 已授权时开启/关闭开关 → 直接 start/stop Service。
+     */
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            onNotificationPermissionResult(granted)
+        }
+
+    /** v27.15 通知权限申请结果处理。granted=true 启动 Service；false 回滚开关到 false。 */
+    private fun onNotificationPermissionResult(granted: Boolean) {
+        // 防御：Activity 已 finish 时不要操作 Service / settings（避免 IllegalStateException）
+        if (isFinishing || isDestroyed) return
+        val container = (application as JMApp).container
+        if (granted) {
+            ReadLaterServiceController.start(this)
+        } else {
+            // 用户拒绝：把开关回滚到 false，保持 UI 与实际状态一致（避免"开关亮着但通知没出来"）
+            lifecycleScope.launch {
+                runCatching {
+                    container.settingsStore.setReadLaterNotificationEnabled(false)
+                    com.jmreader.core.Logger.i("Main", "用户拒绝通知权限，已回滚 readLaterNotificationEnabled=false")
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Splash 退出动画：让 splash 屋顶向上淡出，体验更顺滑（默认是瞬切）。
         val splash = installSplashScreen()
@@ -105,6 +141,7 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             var lastRefreshRate: Boolean? = null
             var lastScreenshot: Boolean? = null
+            var lastReadLaterEnabled: Boolean? = null
             container.settingsStore.settings.collect { s ->
                 if (s.preferMaxRefreshRate != lastRefreshRate) {
                     lastRefreshRate = s.preferMaxRefreshRate
@@ -118,6 +155,11 @@ class MainActivity : FragmentActivity() {
                 if (s.blockScreenshots != lastScreenshot) {
                     lastScreenshot = s.blockScreenshots
                     applyScreenshotBlock(s.blockScreenshots)
+                }
+                // v27.15：稍后再看通知开关变化 → 启停 Service
+                if (s.readLaterNotificationEnabled != lastReadLaterEnabled) {
+                    lastReadLaterEnabled = s.readLaterNotificationEnabled
+                    applyReadLaterNotification(s.readLaterNotificationEnabled)
                 }
             }
         }
@@ -269,6 +311,17 @@ class MainActivity : FragmentActivity() {
         // v27.5 稳定性加固：ProcessLifecycleOwner 是进程级单例，Activity 销毁后 Observer 仍挂载
         // 会持续持有 MainActivity 引用导致泄漏。onDestroy 中 removeObserver 切断引用链。
         runCatching { ProcessLifecycleOwner.get().lifecycle.removeObserver(processObserver) }
+        // v27.15.2 自检修复：tags 缓存退出前强制落盘。
+        // 之前 flush() 从未被调用，节流调度在进程被杀时丢失 dirty 数据，
+        // 下次启动需重新 enrich（浪费流量 + 屏蔽规则短暂失效）。
+        // runBlocking 是必要的：onDestroy 后 appScope 不保证有机会跑（进程可能直接退出）。
+        runCatching {
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeout(1000L) {
+                    JMApp.instance.container.comicTagsCache.flush()
+                }
+            }
+        }
         super.onDestroy()
     }
 
@@ -326,6 +379,30 @@ class MainActivity : FragmentActivity() {
             } else {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             }
+        }
+    }
+
+    /**
+     * v27.15：根据 settings 里的开关状态启停 [com.jmreader.notification.ReadLaterForegroundService]。
+     *
+     * - enabled=true：Android 13+ 未授权 → 申请权限；已授权 → 直接启动 Service。
+     * - enabled=false：停止 Service（通知自动消失）。
+     *
+     * 注意：本方法在 settings collector 里调用，lastReadLaterEnabled 去重保证只在值变化时触发一次。
+     * 用户拒绝权限后会回滚 settings，从而又触发一次（这次是 false → stop），幂等无副作用。
+     */
+    private fun applyReadLaterNotification(enabled: Boolean) {
+        if (!enabled) {
+            ReadLaterServiceController.stop(this)
+            return
+        }
+        // enabled=true：Android 13+ 先检查权限
+        if (ReadLaterServiceController.hasNotificationPermission(this)) {
+            ReadLaterServiceController.start(this)
+        } else {
+            // 申请权限，结果由 notificationPermissionLauncher 回调处理（授权→start，拒绝→rollback to false）
+            // 用 launcher（而非 ActivityCompat.requestPermissions）以确保走 registerForActivityResult 回调链
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 

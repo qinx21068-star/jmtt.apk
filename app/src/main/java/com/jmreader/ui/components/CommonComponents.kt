@@ -34,9 +34,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -106,6 +109,8 @@ fun ComicList(
     header: (@androidx.compose.runtime.Composable () -> Unit)? = null,
     // v27.11：滚动状态回调，滚动时暂停 enrich 的 UI 刷新避免卡顿
     onScrollStateChange: ((Boolean) -> Unit)? = null,
+    // v27.14：COVER_ONLY 模式下被屏蔽封面的本子 ID 集合，封面替换为打叉灰白占位图。
+    coverHiddenIds: Set<String> = emptySet(),
 ) {
     // 监听滚动状态，通知 ViewModel 暂停/恢复 enrich 的 UI 刷新。
     // 用 rememberUpdatedState 确保 callback 总是最新的，但 LaunchedEffect 只依赖 state/gridState，
@@ -133,6 +138,7 @@ fun ComicList(
             onLoadMore = onLoadMore,
             useCardStyle = listStyle == ListStyle.CARD,
             header = header,
+            coverHiddenIds = coverHiddenIds,
         )
         ListStyle.GRID, ListStyle.COMPACT_GRID, ListStyle.MAGAZINE -> ComicListGrid(
             items = items,
@@ -154,6 +160,7 @@ fun ComicList(
             useMagazineStyle = listStyle == ListStyle.MAGAZINE,
             onLoadMore = onLoadMore,
             header = header,
+            coverHiddenIds = coverHiddenIds,
         )
     }
 }
@@ -179,6 +186,7 @@ private fun ComicListColumn(
     onLoadMore: (() -> Unit)?,
     useCardStyle: Boolean = false,
     header: (@androidx.compose.runtime.Composable () -> Unit)? = null,
+    coverHiddenIds: Set<String> = emptySet(),
 ) {
     // v27.6：header 占 1 个 index，触底阈值需 +1 偏移
     val headerOffset = if (header != null) 1 else 0
@@ -217,17 +225,21 @@ private fun ComicListColumn(
             // ComicCard（item 是 @Immutable）可跳过重组。
             val click = remember(item, onClick) { { onClick(item) } }
             val longClick = remember(item, onLongClick) { { onLongClick(item) } }
+            // v27.14：COVER_ONLY 模式下被屏蔽的本子保留卡片但替换封面
+            val coverHidden = item.id.isNotEmpty() && item.id in coverHiddenIds
             if (useCardStyle) {
                 ComicCardStyle(
                     item = item,
                     onClick = click,
                     onLongClick = longClick,
+                    coverHidden = coverHidden,
                 )
             } else {
                 ComicCard(
                     item = item,
                     onClick = click,
                     onLongClick = longClick,
+                    coverHidden = coverHidden,
                 )
             }
         }
@@ -270,6 +282,7 @@ private fun ComicListGrid(
     onLoadMore: (() -> Unit)?,
     useMagazineStyle: Boolean = false,
     header: (@androidx.compose.runtime.Composable () -> Unit)? = null,
+    coverHiddenIds: Set<String> = emptySet(),
 ) {
     // v27.6：header 占 1 个 index，触底阈值需 +1 偏移
     val headerOffset = if (header != null) 1 else 0
@@ -304,17 +317,21 @@ private fun ComicListGrid(
             // v27.5 性能修复：同 ComicListColumn，用 remember 缓存 lambda 避免每次重组创建新 lambda
             val click = remember(item, onClick) { { onClick(item) } }
             val longClick = remember(item, onLongClick) { { onLongClick(item) } }
+            // v27.14：COVER_ONLY 模式下被屏蔽的本子保留卡片但替换封面
+            val coverHidden = item.id.isNotEmpty() && item.id in coverHiddenIds
             if (useMagazineStyle) {
                 ComicMagazineCard(
                     item = item,
                     onClick = click,
                     onLongClick = longClick,
+                    coverHidden = coverHidden,
                 )
             } else {
                 ComicGridCard(
                     item = item,
                     onClick = click,
                     onLongClick = longClick,
+                    coverHidden = coverHidden,
                 )
             }
         }
@@ -416,6 +433,8 @@ fun ComicCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    // v27.14：COVER_ONLY 模式下被屏蔽封面，true=渲染打叉灰白占位图替代真实封面。
+    coverHidden: Boolean = false,
 ) {
     // 颜色从 MaterialTheme 取，黑夜模式自动适配。读 colorScheme 是 O(1) CompositionLocal 查表，
     // release 下 JIT 优化后开销可忽略；之前为追求极致性能硬编码颜色导致深色模式仍显示白底。
@@ -460,7 +479,9 @@ fun ComicCard(
             .width(76.dp)
             .aspectRatio(coverRatio)
             .clip(CoverClipShape)
-        if (cover.isNullOrBlank()) {
+        if (coverHidden) {
+            BlockedCover(modifier = coverModifier)
+        } else if (cover.isNullOrBlank()) {
             Box(modifier = coverModifier.background(placeholderColor))
         } else {
             // v27.12：ColorPainter remember 缓存，避免每次重组分配 3 个新实例
@@ -563,6 +584,8 @@ fun ComicGridCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    // v27.14：COVER_ONLY 模式下被屏蔽封面，true=渲染打叉灰白占位图替代真实封面。
+    coverHidden: Boolean = false,
 ) {
     val cardBg = MaterialTheme.colorScheme.surfaceVariant
     val placeholderColor = MaterialTheme.colorScheme.surface
@@ -592,7 +615,9 @@ fun ComicGridCard(
             .fillMaxWidth()
             .aspectRatio(coverRatio)
             .clip(CoverClipShape)
-        if (cover.isNullOrBlank()) {
+        if (coverHidden) {
+            BlockedCover(modifier = coverModifier)
+        } else if (cover.isNullOrBlank()) {
             Box(modifier = coverModifier.background(placeholderColor))
         } else {
             val placeholderPainter = remember(placeholderColor) {
@@ -665,6 +690,8 @@ fun ComicCardStyle(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    // v27.14：COVER_ONLY 模式下被屏蔽封面，true=渲染打叉灰白占位图替代真实封面。
+    coverHidden: Boolean = false,
 ) {
     val cardBg = MaterialTheme.colorScheme.surfaceVariant
     val placeholderColor = MaterialTheme.colorScheme.surface
@@ -695,7 +722,9 @@ fun ComicCardStyle(
             .fillMaxWidth()
             .aspectRatio(coverRatio)
             .clip(CoverClipShape)
-        if (cover.isNullOrBlank()) {
+        if (coverHidden) {
+            BlockedCover(modifier = coverModifier)
+        } else if (cover.isNullOrBlank()) {
             Box(modifier = coverModifier.background(placeholderColor))
         } else {
             val placeholderPainter = remember(placeholderColor) {
@@ -785,6 +814,8 @@ fun ComicMagazineCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier,
+    // v27.14：COVER_ONLY 模式下被屏蔽封面，true=渲染打叉灰白占位图替代真实封面。
+    coverHidden: Boolean = false,
 ) {
     val cardBg = MaterialTheme.colorScheme.surfaceVariant
     val placeholderColor = MaterialTheme.colorScheme.surface
@@ -814,7 +845,9 @@ fun ComicMagazineCard(
             .fillMaxWidth()
             .aspectRatio(coverRatio)
             .clip(CoverClipShape)
-        if (cover.isNullOrBlank()) {
+        if (coverHidden) {
+            BlockedCover(modifier = coverModifier)
+        } else if (cover.isNullOrBlank()) {
             Box(modifier = coverModifier.background(placeholderColor))
         } else {
             val placeholderPainter = remember(placeholderColor) {
@@ -916,6 +949,29 @@ private fun TagChipsRow(
                     .padding(horizontal = hPadding, vertical = vPadding),
             )
         }
+    }
+}
+
+/**
+ * v27.14：被屏蔽封面占位图（COVER_ONLY 模式）。
+ * 灰白底 + 中央打叉图标，替代真实封面图，保留卡片其他信息（标题/作者/标签）。
+ *
+ * @param modifier 必须由调用方提供尺寸/clip（与正常封面 Box 完全一致），保证布局不变。
+ */
+@Composable
+private fun BlockedCover(modifier: Modifier = Modifier) {
+    val bg = MaterialTheme.colorScheme.surfaceVariant
+    val fg = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    Box(
+        modifier = modifier.background(bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Close,
+            contentDescription = "已屏蔽",
+            tint = fg,
+            modifier = Modifier.size(28.dp),
+        )
     }
 }
 

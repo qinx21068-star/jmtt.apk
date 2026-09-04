@@ -48,6 +48,13 @@ enum class RankingPeriod { DAILY, WEEKLY, MONTHLY, ALL }
 enum class ClearCacheTarget { IMAGES, SEARCH, ALL }
 
 /**
+ * 屏蔽模式。
+ * - [HIDE]：直接从列表中移除被屏蔽的本子（默认行为）。
+ * - [COVER_ONLY]：保留卡片（标题/作者/标签等），仅把封面替换为打叉灰白占位图。
+ */
+enum class BlockMode { HIDE, COVER_ONLY }
+
+/**
  * 列表展示样式。
  * - [LIST]：单列横向卡片（左缩略图 + 右信息），信息密度高。
  * - [GRID]：双列网格（封面 + 标题），浏览效率高。
@@ -177,6 +184,15 @@ data class AppSettings(
     // ============= v27.5 排行榜 =============
     /** 排行榜时间维度（首页 ranking tab 用）。 */
     val rankingPeriod: RankingPeriod = RankingPeriod.WEEKLY,
+
+    /** 屏蔽模式：HIDE=直接隐藏；COVER_ONLY=只隐藏封面（保留卡片，封面替换为打叉占位图）。 */
+    val blockMode: BlockMode = BlockMode.HIDE,
+
+    // ============= v27.15 稍后再看（通知栏快速收藏） =============
+    /** 「通知栏稍后再看」开关。开启后启动 ForegroundService 常驻通知，
+     *  用户可在通知里直接输入 JM 号加入「稍后再看」收藏夹。
+     *  关闭后通知消失、Service 停止，已收藏的条目保留在「稍后再看」文件夹。 */
+    val readLaterNotificationEnabled: Boolean = false,
 )
 
 class SettingsStore(private val context: Context, scope: CoroutineScope) {
@@ -241,6 +257,10 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
         val PROXY = stringPreferencesKey("proxy_v27_5")
         // v27.5 排行榜
         val RANKING_PERIOD = stringPreferencesKey("ranking_period_v27_5")
+        // 屏蔽模式
+        val BLOCK_MODE = stringPreferencesKey("block_mode")
+        // v27.15 稍后再看通知
+        val READ_LATER_NOTIFICATION = booleanPreferencesKey("read_later_notification_v27_15")
     }
 
     /**
@@ -390,6 +410,8 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
         proxy = p[Keys.PROXY],
         // v27.5 排行榜
         rankingPeriod = runCatching { RankingPeriod.valueOf(p[Keys.RANKING_PERIOD] ?: "WEEKLY") }.getOrDefault(RankingPeriod.WEEKLY),
+        blockMode = runCatching { BlockMode.valueOf(p[Keys.BLOCK_MODE] ?: "HIDE") }.getOrDefault(BlockMode.HIDE),
+        readLaterNotificationEnabled = p[Keys.READ_LATER_NOTIFICATION] ?: false,
     )
 
     suspend fun setServerUrl(url: String) = context.dataStore.edit { it[Keys.SERVER_URL] = url }
@@ -484,4 +506,10 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
     }
     // 排行榜
     suspend fun setRankingPeriod(p: RankingPeriod) = context.dataStore.edit { it[Keys.RANKING_PERIOD] = p.name }
+    suspend fun setBlockMode(m: BlockMode) = context.dataStore.edit { it[Keys.BLOCK_MODE] = m.name }
+
+    /** v27.15：开关「通知栏稍后再看」。实际启停 Service 由 MainActivity/JMApp 监听 settings flow 触发。 */
+    suspend fun setReadLaterNotificationEnabled(v: Boolean) = context.dataStore.edit {
+        it[Keys.READ_LATER_NOTIFICATION] = v
+    }
 }

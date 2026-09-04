@@ -11,6 +11,7 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import retrofit2.Response
 
@@ -302,7 +303,15 @@ class JMRepository(private val container: AppContainer) {
         }
     }
 
-    /** 把 Result 转成 Resource，失败信息用 friendlyError 包装。 */
+    /**
+     * 把 Result 转成 Resource，失败信息用 friendlyError 包装。
+     *
+     * v27.15.2 自检修复：SessionExpiredException 在这里统一处理——
+     * 之前 search/latest/ranking/categoriesFilter/randomComics/comicDetail/chapterImages
+     * 等 7 个方法用它包装直连调用，会话过期（401/403）时只返回模糊错误，
+     * 既不清 directClient session 也不清登录态，用户持续看到"加载失败"
+     * 却不知道要重新登录。与 forum/serverFavorites 的显式处理对齐。
+     */
     private fun <T> Result<T>.toResource(errPrefix: String): Resource<T> {
         // 关键：CancellationException 不能被 Result 吞掉再转成 Resource.Error，
         // 否则协程取消（如 VM 切章/退出）会被误认为"加载失败"并在 UI 显示错误，
@@ -310,6 +319,14 @@ class JMRepository(private val container: AppContainer) {
         if (isFailure) {
             val e = exceptionOrNull()
             if (e is CancellationException) throw e
+            if (e is com.jmreader.data.api.direct.SessionExpiredException) {
+                runCatching { container.directClient.clearSession() }
+                // setLoggedInUser 是 suspend，toResource 非 suspend——用 appScope 异步清理
+                container.appScope.launch {
+                    runCatching { container.settingsStore.setLoggedInUser(null) }
+                }
+                return Resource.Error("登录已过期，请重新登录")
+            }
         }
         return fold(
             onSuccess = { Resource.Success(it) },

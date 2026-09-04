@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- v27.15 稍后再看通知栏：Android 13+ 需显式申请通知权限 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- v27.15 稍后再看通知栏：ForegroundService 常驻通知 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- v27.15 稍后再看通知栏：Android 14+ 需声明具体 type，对应 service 的 foregroundServiceType="specialUse" -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".JMApp"
@@ -27,5 +33,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- v27.15 稍后再看常驻通知服务。foregroundServiceType=specialUse 对应 Android 14+ 的强制要求。 -->
+        <service
+            android:name=".notification.ReadLaterForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="稍后再看快捷收藏：常驻通知，用户在通知里输入 JM 号即可加入收藏列表" />
+        </service>
+
+        <!-- v27.15 通知 RemoteInput 回车接收器。exported=false 仅本应用 PendingIntent 触发。 -->
+        <receiver
+            android:name=".notification.ReadLaterReplyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.jmreader.READ_LATER_REPLY" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

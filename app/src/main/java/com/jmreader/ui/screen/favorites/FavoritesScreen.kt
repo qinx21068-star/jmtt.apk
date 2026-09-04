@@ -9,12 +9,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -47,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.jmreader.data.AppContainer
 import com.jmreader.data.dto.FavoriteEntry
+import com.jmreader.data.local.FavoritesStore
 import com.jmreader.ui.components.ComicList
 import com.jmreader.ui.components.EmptyBox
 import com.jmreader.ui.components.FavoriteFolderManageDialog
@@ -93,6 +96,7 @@ fun FavoritesScreen(container: AppContainer, navController: NavController) {
         }
     }
     // v27.5 #15：本地收藏分组过滤。filterFolder=null 表示「全部」；"__none__" 表示「未分组」
+    // v27.15：FavoritesStore.READ_LATER_FOLDER_ID 表示「稍后再看」内置文件夹
     var filterFolder by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     val localEntries = remember(localEntriesRaw, rules, enrichVersion) {
         if (rules.isEmpty()) localEntriesRaw
@@ -104,11 +108,23 @@ fun FavoritesScreen(container: AppContainer, navController: NavController) {
     }
     val folderCounts = remember(localEntriesRaw) { container.favoritesStore.folderCounts() }
     val localFavorites = remember(localEntries, filterFolder) {
-        when (filterFolder) {
+        // v27.15.2：渲染前去重（保留第一个），防御性兜底。
+        // 数据层已做加载/写入去重，但保险起见 UI 层也去一次，
+        // 避免任何残留重复条目导致 ComicList 的 LazyColumn key=c.id 冲突崩溃或显示数量不一致。
+        val raw = when (filterFolder) {
             null -> localEntries.map { it.comic }
             "__none__" -> localEntries.filter { it.folderId == null }.map { it.comic }
+            FavoritesStore.READ_LATER_FOLDER_ID ->
+                localEntries.filter { it.folderId == FavoritesStore.READ_LATER_FOLDER_ID }.map { it.comic }
             else -> localEntries.filter { it.folderId == filterFolder }.map { it.comic }
         }
+        val seen = HashSet<String>(raw.size)
+        val out = ArrayList<com.jmreader.data.dto.ComicBriefDto>(raw.size)
+        for (c in raw) {
+            val key = c.id.ifBlank { "idx_${out.size}" }
+            if (seen.add(key)) out.add(c)
+        }
+        out
     }
     val browseHistory = remember(browseHistoryRaw, rules, enrichVersion) {
         if (rules.isEmpty()) browseHistoryRaw
@@ -166,6 +182,7 @@ fun FavoritesScreen(container: AppContainer, navController: NavController) {
                                     folders = folders,
                                     folderCounts = folderCounts,
                                     totalCount = localEntries.size,
+                                    readLaterCount = folderCounts[FavoritesStore.READ_LATER_FOLDER_ID] ?: 0,
                                     selected = filterFolder,
                                     onSelect = { filterFolder = it },
                                     onManage = { showFolderManager = true },
@@ -261,15 +278,19 @@ fun FavoritesScreen(container: AppContainer, navController: NavController) {
 /**
  * v27.5 #15：本地收藏上方的分组过滤 chip 行。
  *
- * Chips：[全部] [未分组] [folder1] [folder2] ... [+ 管理]
+ * Chips：[稍后再看] [全部] [未分组] [folder1] [folder2] ... [+ 管理]
  * - 选中态用 FilterChip，未选中用 AssistChip 样式
  * - 「+ 管理」打开 [FavoriteFolderManageDialog]
+ *
+ * v27.15：新增内置「稍后再看」chip，固定在最前，带书签图标，选中时与 [FavoritesStore.READ_LATER_FOLDER_ID] 对应。
+ * 当 [readLaterCount] > 0 时 chip 显示数量。当 [readLaterCount] == 0 时不隐藏（让用户知道这个功能存在）。
  */
 @Composable
 private fun FolderFilterRow(
     folders: List<com.jmreader.data.dto.FavoriteFolder>,
     folderCounts: Map<String?, Int>,
     totalCount: Int,
+    readLaterCount: Int,
     selected: String?,
     onSelect: (String?) -> Unit,
     onManage: () -> Unit,
@@ -281,6 +302,21 @@ private fun FolderFilterRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // v27.15：内置「稍后再看」chip，固定在最前
+        item(key = "read_later") {
+            FilterChip(
+                selected = selected == FavoritesStore.READ_LATER_FOLDER_ID,
+                onClick = { onSelect(FavoritesStore.READ_LATER_FOLDER_ID) },
+                label = { Text("稍后再看 ($readLaterCount)") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Outlined.Bookmark,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+            )
+        }
         item(key = "all") {
             FilterChip(
                 selected = selected == null,
@@ -443,6 +479,7 @@ private fun ServerFavoritesTab(
                 listStyle = listStyle,
                 onLoadMore = onLoadMore,
                 onScrollStateChange = vm::setScrolling,
+                coverHiddenIds = s.coverHiddenIds,
             )
         }
     }

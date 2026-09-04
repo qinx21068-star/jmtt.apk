@@ -80,11 +80,15 @@ class AppContainer(context: Context) {
     /** 取后端 API（仅后端模式用）。直连模式抛错避免误用。 */
     suspend fun ensureApi(): JMApi {
         _api.value?.let { return it }
-        val url = settingsStore.settings.first().serverUrl
+        val s = settingsStore.settings.first()
+        val url = s.serverUrl
         if (url.isBlank()) {
             throw IllegalStateException("后端地址未配置：当前为直连模式，无需配置后端；如需切换到后端模式，请到「设置 → 后端地址」填写地址。")
         }
-        val built = NetworkFactory.build(url)
+        // v27.15.2 自检修复：与 rebuildApi() 对齐，把代理配置一并传给 Retrofit client。
+        // 之前只传 url 不传 proxy，用户配好代理后首次进入后端模式不走代理，
+        // 弱网/被墙环境下表现为"明明配了代理，后端还是连不上"，需手动切换一次后端才生效。
+        val built = NetworkFactory.build(url, s.proxy)
         backendClient = built.client
         _api.value = built.api
         return built.api

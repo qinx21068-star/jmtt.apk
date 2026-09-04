@@ -275,6 +275,7 @@ fun AuthorScreen(
                         onLoadMore = { vm.loadMore() },
                         header = authorHeader,
                         onScrollStateChange = vm::setScrolling,
+                        coverHiddenIds = s.coverHiddenIds,
                     )
                 }
             }

@@ -404,6 +404,7 @@ fun HomeScreen(container: AppContainer, navController: NavController) {
                     onLoadMore = onLoadMore,
                     header = filterHeader,
                     onScrollStateChange = onScrollStateChange,
+                    coverHiddenIds = s.coverHiddenIds,
                 )
             }
         }

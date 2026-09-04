@@ -6,6 +6,7 @@ import com.jmreader.core.Logger
 import com.jmreader.data.AppContainer
 import com.jmreader.data.dto.ComicBriefDto
 import com.jmreader.data.local.BlockedTagsStore
+import com.jmreader.data.local.BlockMode
 import com.jmreader.data.repository.Resource
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
@@ -49,6 +50,12 @@ data class ListUiState(
     val endReached: Boolean = false,
     /** 有 tag 规则且部分条目未补全 tags（持回中）。UI 可显示"正在过滤…"。 */
     val filtering: Boolean = false,
+    /**
+     * 屏蔽模式为 COVER_ONLY 时，被屏蔽但仍保留卡片的本子 ID 集合。
+     * UI 应将这些条目的封面替换为打叉灰白占位图，保留标题/作者/标签等。
+     * 屏蔽模式为 HIDE 时此集合为空（被屏蔽条目直接从 items 中移除）。
+     */
+    val coverHiddenIds: Set<String> = emptySet(),
 )
 
 abstract class BaseListViewModel(protected val container: AppContainer) : ViewModel() {
@@ -109,6 +116,11 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
     /** 当前是否有 tag 屏蔽规则。有则采用持回策略；无则立即显示。 */
     @Volatile private var hasTagRules: Boolean = false
 
+    /** 当前屏蔽模式。HIDE=直接移除；COVER_ONLY=保留卡片仅隐藏封面。
+     *  v27.14：通过 settings flow 实时同步，模式切换后列表立即重算。
+     *  初始值取自 cachedSnapshot，避免 refresh 早于 settings 首次 emit 时仍为默认 HIDE。 */
+    @Volatile private var blockMode: BlockMode = container.settingsStore.cachedSnapshot.blockMode
+
     /** 列表是否正在滚动。滚动时暂停 enrich 的 UI 刷新，避免列表变化导致 LazyColumn 重新布局卡顿。
      *  enrich 后台继续跑（写 enrichedDetailCache），停下后一次性刷新。 */
     @Volatile private var scrolling = false
@@ -157,11 +169,17 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
         val (tags, names, authors) = currentRules()
         val rules = container.blockedTagsStore.normalizeRules(tags, names, authors)
         val snapshot = currentDataSource()
-        val filtered = applyBlock(snapshot, rules)
+        val (filtered, coverHidden) = applyBlock(snapshot, rules, blockMode)
         val stillPending = hasTagRules && snapshot.any { it.id !in enrichedIds }
         // _state.value 是线程安全的，可在任意线程写
-        if (filtered != _state.value.items || stillPending != _state.value.filtering) {
-            _state.value = _state.value.copy(items = filtered, filtering = stillPending)
+        if (filtered != _state.value.items || stillPending != _state.value.filtering ||
+            coverHidden != _state.value.coverHiddenIds
+        ) {
+            _state.value = _state.value.copy(
+                items = filtered,
+                filtering = stillPending,
+                coverHiddenIds = coverHidden,
+            )
         }
     }
 
@@ -186,10 +204,16 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                     if (rawItems.isNotEmpty()) {
                         withContext(Dispatchers.Default) {
                             val src = currentDataSource()
-                            val filtered = applyBlock(src, rules)
+                            val (filtered, coverHidden) = applyBlock(src, rules, blockMode)
                             val stillPending = hasTagRules && src.any { it.id !in enrichedIds }
-                            if (filtered != _state.value.items || stillPending != _state.value.filtering) {
-                                _state.value = _state.value.copy(items = filtered, filtering = stillPending)
+                            if (filtered != _state.value.items || stillPending != _state.value.filtering ||
+                                coverHidden != _state.value.coverHiddenIds
+                            ) {
+                                _state.value = _state.value.copy(
+                                    items = filtered,
+                                    filtering = stillPending,
+                                    coverHiddenIds = coverHidden,
+                                )
                             }
                         }
                         // 规则变化可能需要重新 enrich（新增 tag 规则时之前未持回的条目现在需要补全）
@@ -199,6 +223,18 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                     throw e
                 } catch (e: Throwable) {
                     Logger.w("List", "屏蔽规则 collect 处理失败: ${Logger.brief(e)}")
+                }
+            }
+        }
+
+        // v27.14：监听屏蔽模式变化，切换 HIDE/COVER_ONLY 时立即重算列表。
+        viewModelScope.launch {
+            container.settingsStore.settings.collect { s ->
+                if (s.blockMode != blockMode) {
+                    blockMode = s.blockMode
+                    if (rawItems.isNotEmpty()) {
+                        withContext(Dispatchers.Default) { refreshUiStateFromRaw() }
+                    }
                 }
             }
         }
@@ -212,6 +248,67 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
 
     /** 当前 refresh 的 Job，新 refresh 启动前取消旧的，避免并发竞态覆盖结果。 */
     private var refreshJob: Job? = null
+
+    /**
+     * v27.14：取消所有正在进行的加载/补全任务。
+     * 子类批量操作（如批量 ID 搜索）前调用，避免并发写 rawItems / _state 竞态。
+     */
+    protected fun cancelAllLoadingJobs() {
+        refreshJob?.cancel()
+        loadMoreJob?.cancel()
+        enrichJob?.cancel()
+        enrichDebounceJob?.cancel()
+    }
+
+    /**
+     * v27.14：批量设置列表数据（用于批量 ID 搜索等场景）。
+     *
+     * 取消所有正在进行的加载/补全任务，直接用 [items] 作为完整列表（无分页）。
+     * 所有条目视为已补全（详情接口的 tags/likes/views 即真实数据），写入持久化缓存。
+     * 应用屏蔽规则后更新 _state（HIDE 模式过滤被屏蔽条目；COVER_ONLY 模式保留并标记封面隐藏）。
+     *
+     * @param items 完整列表数据（已按目标顺序排好，例如按用户输入的 ID 顺序）
+     * @param totalForState 写入 state.total 的值，默认为 items.size
+     */
+    protected suspend fun setBatchResult(
+        items: List<ComicBriefDto>,
+        totalForState: Int? = items.size,
+    ) {
+        cancelAllLoadingJobs()
+        // 确保持久化 tags 缓存已加载
+        container.comicTagsCache.ensureLoaded()
+        // 详情接口返回的就是真实 tags，全部标记为已补全 + 写缓存
+        val newIds = items.mapTo(HashSet(items.size)) { it.id }
+        enrichedIds.retainAll(newIds)
+        enrichedDetailCache.keys.retainAll(newIds)
+        enrichAttempts.keys.retainAll(newIds)
+        items.forEach { c ->
+            if (c.id.isNotEmpty() && c.tags.isNotEmpty()) {
+                enrichedIds.add(c.id)
+                enrichedDetailCache[c.id] = c
+                container.comicTagsCache.put(c.id, c.tags)
+            }
+        }
+        rawItems = items
+        val (tags, names, authors) = currentRules()
+        val rules = container.blockedTagsStore.normalizeRules(tags, names, authors)
+        hasTagRules = rules.tags.isNotEmpty()
+        val srcForFilter = mergeEnriched(rawItems)
+        val (filtered, coverHidden) = withContext(Dispatchers.Default) {
+            applyBlock(srcForFilter, rules, blockMode)
+        }
+        _state.value = _state.value.copy(
+            items = filtered,
+            page = 1,
+            total = totalForState,
+            refreshing = false,
+            loadingMore = false,
+            endReached = true, // 批量结果无分页
+            error = null,
+            filtering = false,
+            coverHiddenIds = coverHidden,
+        )
+    }
 
     fun refresh() {
         refreshJob?.cancel()
@@ -265,7 +362,9 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                         hasTagRules = rules.tags.isNotEmpty()
                         // v27.13 关键修复：同 loadMore，用 mergeEnriched(rawItems) 保留已 enrich 的 tags
                         val srcForFilter = mergeEnriched(rawItems)
-                        val filtered = withContext(Dispatchers.Default) { applyBlock(srcForFilter, rules) }
+                        val (filtered, coverHidden) = withContext(Dispatchers.Default) {
+                            applyBlock(srcForFilter, rules, blockMode)
+                        }
                         _state.value = _state.value.copy(
                             items = filtered,
                             page = 1,
@@ -273,6 +372,7 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                             refreshing = false,
                             endReached = reached,
                             filtering = hasTagRules && rawItems.any { it.id !in enrichedIds },
+                            coverHiddenIds = coverHidden,
                         )
                         enrichTagsInBackground()
                     }
@@ -338,7 +438,9 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                         // rawItems 是 refresh/loadMore 时设置的快照，enrich 后来补全的 tags
                         // 只在 enrichedDetailCache 里。用 rawItems 会丢失已 enrich 的 tags。
                         val srcForFilter = mergeEnriched(rawItems)
-                        val filtered = withContext(Dispatchers.Default) { applyBlock(srcForFilter, rules) }
+                        val (filtered, coverHidden) = withContext(Dispatchers.Default) {
+                            applyBlock(srcForFilter, rules, blockMode)
+                        }
                         _state.value = _state.value.copy(
                             items = filtered,
                             page = next,
@@ -346,6 +448,7 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                             loadingMore = false,
                             endReached = reached,
                             filtering = hasTagRules && rawItems.any { it.id !in enrichedIds },
+                            coverHiddenIds = coverHidden,
                         )
                         enrichTagsInBackground()
                     }
@@ -384,43 +487,69 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
      *   - 有 tags 的条目（列表接口返回了 或 缓存命中 或 enrich 完成）：即时判定。
      *   - 无 tags 且未 enrich 的条目：**持回**（不显示），等 enrich 完成再判定。
      *   - enrich 失败的条目：保持持回（fail-closed），绝不泄漏被屏蔽内容。
+     *
+     * v27.14 屏蔽模式：
+     * - [BlockMode.HIDE]：被屏蔽条目从列表移除（行为同 v27.11）。
+     * - [BlockMode.COVER_ONLY]：被屏蔽条目保留在列表中，但其 id 加入返回的 coverHiddenIds 集合，
+     *   UI 据此将封面替换为打叉灰白占位图，保留卡片其他信息（标题/作者/标签）。
+     *   持回（未补全 tags）的条目仍按原逻辑隐藏（不显示），不能加入 coverHiddenIds
+     *   （因为还没确定是否真被屏蔽）。
+     *
+     * @return (可见列表, 仅隐藏封面的 id 集合)。HIDE 模式下集合为空。
      */
     private fun applyBlock(
         items: List<ComicBriefDto>,
         rules: BlockedTagsStore.NormalizedRules,
-    ): List<ComicBriefDto> {
-        if (rules.isEmpty()) return items
+        mode: BlockMode,
+    ): Pair<List<ComicBriefDto>, Set<String>> {
+        if (rules.isEmpty()) return items to emptySet()
+        val coverOnly = mode == BlockMode.COVER_ONLY
+        val coverHidden = if (coverOnly) mutableSetOf<String>() else null
+
+        /** 判定条目是否被屏蔽（不含持回逻辑）。 */
+        fun isBlocked(comic: ComicBriefDto): Boolean =
+            if (container.blockedTagsStore.isBlocked(emptyList(), comic.name, comic.author, rules)) {
+                true
+            } else if (comic.tags.isNotEmpty()) {
+                container.blockedTagsStore.isBlocked(comic.tags, "", null, rules)
+            } else {
+                false
+            }
+
+        /** 屏蔽命中后的处理：HIDE 移除，COVER_ONLY 保留并记入 coverHidden。返回 true 表示从列表移除。 */
+        fun handleBlocked(comic: ComicBriefDto): Boolean =
+            if (coverOnly) {
+                if (comic.id.isNotEmpty()) coverHidden!!.add(comic.id)
+                false // 保留条目
+            } else {
+                true // 移除条目
+            }
+
         val tagRulesActive = rules.tags.isNotEmpty()
         if (!tagRulesActive) {
-            // 无 tag 规则：仅按 name/author 过滤，立即可见
-            return items.filterNot { comic ->
-                container.blockedTagsStore.isBlocked(emptyList(), comic.name, comic.author, rules)
+            // 无 tag 规则：仅按 name/author 即时判定
+            val filtered = items.filterNot { comic ->
+                if (isBlocked(comic)) handleBlocked(comic) else false
             }
+            return filtered to (coverHidden ?: emptySet())
         }
         // v27.12：一次性获取 enrichedIds 快照，避免 filterNot 内每条 item 都 synchronized。
-        // 之前 100+ 条目 × 100+ 次 synchronized(enrichedIds) → 锁竞争 → Default 线程上的开销。
         val enrichedSnapshot = enrichedIds.toSet()
         // 有 tag 规则：有 tags 的即时判定，无 tags 的持回（隐藏）
-        return items.filterNot { comic ->
-            // 1. name/author 屏蔽：立即判定
-            if (container.blockedTagsStore.isBlocked(emptyList(), comic.name, comic.author, rules)) {
-                return@filterNot true
-            }
-            // v27.13 修复：id="" 的条目无法 enrich（enrich 的 isNotEmpty() 守卫跳过它们），
-            // 若 fail-closed 会导致永久隐藏。改为：有 tags 就判定，无 tags 直接放行（无法精确屏蔽）。
+        val filtered = items.filterNot { comic ->
+            // id="" 的条目无法 enrich，有 tags 就判定，无 tags 直接放行（无法精确屏蔽）。
             if (comic.id.isBlank()) {
-                return@filterNot container.blockedTagsStore.isBlocked(comic.tags, "", null, rules)
+                return@filterNot if (isBlocked(comic)) handleBlocked(comic) else false
             }
-            // 2. 未补全 tags → 持回（暂不显示，等 enrich 完成或缓存命中）
+            // 未补全 tags → 持回（暂不显示，等 enrich 完成或缓存命中）
+            // COVER_ONLY 模式下也持回：尚未确定是否真被屏蔽，不能贸然加入 coverHiddenIds。
             if (comic.id !in enrichedSnapshot) {
                 return@filterNot true
             }
-            // 3. 已补全 → 用真实 tags 判定
-            if (container.blockedTagsStore.isBlocked(comic.tags, "", null, rules)) {
-                return@filterNot true
-            }
-            false
+            // 已补全 → 用真实 tags 判定
+            if (isBlocked(comic)) handleBlocked(comic) else false
         }
+        return filtered to (coverHidden ?: emptySet())
     }
 
     /**
@@ -528,10 +657,17 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                                         enrichDirty = true
                                     } else {
                                         val src = currentDataSource()
-                                        val filtered = applyBlock(src, rules)
+                                        val (filtered, coverHidden) = applyBlock(src, rules, blockMode)
                                         val stillPending = hasTagRules && src.any { it.id !in enrichedIds }
-                                        if (filtered != _state.value.items || stillPending != _state.value.filtering) {
-                                            _state.value = _state.value.copy(items = filtered, filtering = stillPending)
+                                        if (filtered != _state.value.items ||
+                                            stillPending != _state.value.filtering ||
+                                            coverHidden != _state.value.coverHiddenIds
+                                        ) {
+                                            _state.value = _state.value.copy(
+                                                items = filtered,
+                                                filtering = stillPending,
+                                                coverHiddenIds = coverHidden,
+                                            )
                                         }
                                     }
                                 }
@@ -545,10 +681,17 @@ abstract class BaseListViewModel(protected val container: AppContainer) : ViewMo
                     enrichDirty = true
                 } else {
                     val src = currentDataSource()
-                    val filtered = applyBlock(src, rules)
+                    val (filtered, coverHidden) = applyBlock(src, rules, blockMode)
                     val stillPending = hasTagRules && src.any { it.id !in enrichedIds }
-                    if (filtered != _state.value.items || stillPending != _state.value.filtering) {
-                        _state.value = _state.value.copy(items = filtered, filtering = stillPending)
+                    if (filtered != _state.value.items ||
+                        stillPending != _state.value.filtering ||
+                        coverHidden != _state.value.coverHiddenIds
+                    ) {
+                        _state.value = _state.value.copy(
+                            items = filtered,
+                            filtering = stillPending,
+                            coverHiddenIds = coverHidden,
+                        )
                     }
                 }
                 Logger.i("List", "补全字段完成")
